@@ -1,4 +1,4 @@
-use crate::{chunker, embeddings, project, sync, turbopuffer};
+use crate::{chunker, embeddings, project, sync, turbopuffer, vprintln};
 use anyhow::Result;
 use embeddings::Embedding;
 use std::fs::File;
@@ -47,7 +47,11 @@ fn load_chunk_content(chunk: &mut chunker::Chunk) -> Result<()> {
 }
 
 /// Convert chunks to ripgrep-style output format for fzf compatibility  
-fn chunks_to_ripgrep_format(chunks: Vec<chunker::Chunk>, root_dir: &str, show_scores: bool) -> String {
+fn chunks_to_ripgrep_format(
+    chunks: Vec<chunker::Chunk>,
+    root_dir: &str,
+    show_scores: bool,
+) -> String {
     chunks
         .into_iter()
         .map(|chunk| {
@@ -67,7 +71,10 @@ fn chunks_to_ripgrep_format(chunks: Vec<chunker::Chunk>, root_dir: &str, show_sc
 
             if show_scores {
                 if let Some(distance) = chunk.distance {
-                    format!("{}:{}:{:.4}:{}", relative_path, chunk.start_line, distance, preview)
+                    format!(
+                        "{}:{}:{:.4}:{}",
+                        relative_path, chunk.start_line, distance, preview
+                    )
                 } else {
                     format!("{}:{}:n/a:{}", relative_path, chunk.start_line, preview)
                 }
@@ -100,6 +107,7 @@ pub async fn search(
         ..Default::default()
     };
 
+    let instant = std::time::Instant::now();
     let embedding_provider = match embedding_concurrency {
         Some(concurrency) => embeddings::VoyageEmbedding::with_concurrency(concurrency),
         None => embeddings::VoyageEmbedding::new(),
@@ -107,6 +115,7 @@ pub async fn search(
     let embed_result = embedding_provider
         .embed(vec![query_chunk], embeddings::EmbeddingType::Query)
         .await?;
+    vprintln!("embedding w/ voyage took: {:.2?}", instant.elapsed());
 
     let query_vector = embed_result
         .chunks
@@ -115,6 +124,7 @@ pub async fn search(
         .ok_or(SearchError::NoEmbedding)?
         .clone();
 
+    let instant = std::time::Instant::now();
     // Search turbopuffer using existing query_chunks
     let results = turbopuffer::query_chunks(
         &namespace,
@@ -123,6 +133,7 @@ pub async fn search(
         None,
     )
     .await?;
+    vprintln!("tpuf search took: {:.2?}", instant.elapsed());
 
     // Load content from local files
     let mut results_with_content = results;
@@ -132,7 +143,11 @@ pub async fn search(
         }
     }
 
-    Ok(chunks_to_ripgrep_format(results_with_content, &root_dir, show_scores))
+    Ok(chunks_to_ripgrep_format(
+        results_with_content,
+        &root_dir,
+        show_scores,
+    ))
 }
 
 /// Implements a speculative search pattern that races a search against an index sync.
@@ -149,7 +164,16 @@ pub async fn speculate_search(
         let mut search_task = tokio::spawn({
             let query = query.to_string();
             let directory = directory.to_string();
-            async move { search(&query, &directory, max_count, embedding_concurrency, show_scores).await }
+            async move {
+                search(
+                    &query,
+                    &directory,
+                    max_count,
+                    embedding_concurrency,
+                    show_scores,
+                )
+                .await
+            }
         });
         let mut index_task = tokio::spawn({
             let directory = directory.to_string();

@@ -56,10 +56,16 @@ pub async fn ping(region: Option<&str>) -> Result<u64, TurbopufferError> {
             .unwrap_or("gcp-us-east4")
     });
 
+    let instant = Instant::now();
     let _result = client
         .get(format!("https://{}.turbopuffer.com/", region_to_use))
         .send()
         .await?;
+    crate::vprintln!(
+        "tpuf ping to {} took {:.2} ms",
+        region_to_use,
+        instant.elapsed().as_millis()
+    );
 
     let latency = instant.elapsed().as_millis() as u64;
     Ok(latency)

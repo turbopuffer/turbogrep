@@ -29,6 +29,11 @@ pub trait Embedding: Clone + Send + 'static {
     /// Maximum number of chunks per batch
     fn max_batch_size(&self) -> usize;
 
+    async fn ping(&self) -> Result<(), EmbeddingError> {
+        // Default implementation does nothing
+        Ok(())
+    }
+
     /// Default implementation of embed_stream using the core methods
     /// Implementations typically don't need to override this
     fn embed_stream<S>(
@@ -193,6 +198,18 @@ impl Embedding for VoyageEmbedding {
 
     fn max_batch_size(&self) -> usize {
         50
+    }
+
+    async fn ping(&self) -> Result<(), EmbeddingError> {
+        let client = get_client();
+        let instant = Instant::now();
+        let _response = client.get("https://api.voyageai.com/").send().await?;
+        crate::vprintln!(
+            "Voyage AI ping took {:.3}s",
+            instant.elapsed().as_secs_f64()
+        );
+
+        Ok(())
     }
 }
 

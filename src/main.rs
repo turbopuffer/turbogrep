@@ -1,3 +1,4 @@
+use crate::embeddings::Embedding;
 use anyhow::Result;
 use clap::Parser;
 use owo_colors::OwoColorize;
@@ -200,7 +201,9 @@ async fn main() {
         if let Err(e) = turbopuffer::delete_namespace(&namespace).await {
             vprintln!("<(°◯°)> Note: {}", e);
         }
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency).await.unwrap();
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency)
+            .await
+            .unwrap();
     }
 
     // Handle --sample flag: output N random chunks to stdout
@@ -234,8 +237,13 @@ async fn main() {
         chunker::chunk_files(&root_dir).unwrap();
     } else if query.is_none() || cli.no_search {
         // No query provided, just sync the directory
-        vprintln!("No search query provided, syncing directory: {}", start_directory);
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency).await.unwrap();
+        vprintln!(
+            "No search query provided, syncing directory: {}",
+            start_directory
+        );
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency)
+            .await
+            .unwrap();
     } else if let Some(query) = query {
         // Warm up turbopuffer connections in the background to reduce first-call latency
         tokio::spawn(async {
@@ -246,9 +254,26 @@ async fn main() {
             }
         });
 
+        tokio::spawn(async {
+            let voyage = embeddings::VoyageEmbedding::new();
+            for _i in 1..=5 {
+                if let Err(_e) = voyage.ping().await {
+                    break;
+                }
+            }
+        });
+
         if cli.reset {
             // no need to speculate, we know it's indexed
-            match search::search(&query, &start_directory, cli.max_count, cli.embedding_concurrency, cli.scores).await {
+            match search::search(
+                &query,
+                &start_directory,
+                cli.max_count,
+                cli.embedding_concurrency,
+                cli.scores,
+            )
+            .await
+            {
                 Ok(results) => println!("{}", results),
                 Err(e) => {
                     eprintln!("<(°!°)> Search failed: {}", e);
@@ -257,7 +282,15 @@ async fn main() {
             }
         } else if cli.no_sync {
             vprintln!("<(°◯°)> Searching existing index (--no-sync)...");
-            match search::search(&query, &start_directory, cli.max_count, cli.embedding_concurrency, cli.scores).await {
+            match search::search(
+                &query,
+                &start_directory,
+                cli.max_count,
+                cli.embedding_concurrency,
+                cli.scores,
+            )
+            .await
+            {
                 Ok(results) => println!("{}", results),
                 Err(e) => {
                     eprintln!("<(°!°)> Search failed: {}", e);
@@ -265,7 +298,15 @@ async fn main() {
                 }
             }
         } else {
-            match search::speculate_search(&query, &start_directory, cli.max_count, cli.embedding_concurrency, cli.scores).await {
+            match search::speculate_search(
+                &query,
+                &start_directory,
+                cli.max_count,
+                cli.embedding_concurrency,
+                cli.scores,
+            )
+            .await
+            {
                 Ok(results) => println!("{}", results),
                 Err(e) => {
                     eprintln!("<(°!°)> Search failed: {}", e);
