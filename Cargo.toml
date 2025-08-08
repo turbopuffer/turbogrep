@@ -1,0 +1,52 @@
+[package]
+name = "turbogrep"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "tg"
+path = "src/main.rs"
+
+[dependencies]
+ignore = "0.4"
+num_cpus = "1.0"
+tree-sitter = "0.25.8"
+tree-sitter-rust = "0.24.0"
+tree-sitter-python = "0.23.6"
+tree-sitter-javascript = "0.23.1"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-go = "0.23.4"
+tree-sitter-java = "0.23.5"
+tree-sitter-c = "0.24.1"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-ruby = "0.23.0"
+tree-sitter-bash = "0.23.1"
+
+thiserror = "1.0"
+anyhow = "1.0"
+rayon = "1.10"
+globset = "0.4"
+reqwest = { version = "0.12.22", features = ["json", "http2", "brotli"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.47", features = ["full"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+futures = "0.3"
+indicatif = "0.17"
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive"] }
+
+tokio-rayon = "2.1.0"
+rand = "0.8"
+owo-colors = "4.1"
+
+
+[dev-dependencies]
+tempfile = "3.8"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[profile.release]
+debug = true
+
+[profile.test]
+opt-level = 2

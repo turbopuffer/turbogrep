@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(rustc:*)",
+      "Bash(cargo check:*)",
+      "Bash(rm:*)",
+      "Bash(./target/release/turbogrep:*)",
+      "Bash(TURBOGREP_VERBOSE=1 ./target/release/turbogrep test_all_chunkers)",
+      "Bash(export TURBOGREP_VERBOSE=1)",
+      "Bash(cargo run:*)",
+      "Bash(grep:*)",
+      "Bash(./target/release/tg --help)",
+      "Bash(ls:*)",
+      "Bash(cargo clean:*)"
+    ],
+    "deny": []
+  }
+}
