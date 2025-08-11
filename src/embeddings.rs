@@ -5,6 +5,7 @@ use futures::stream::{self, Stream, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
+use std::pin::Pin;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -188,7 +189,7 @@ impl Embedding for VoyageEmbedding {
         async move {
             let api_key =
                 std::env::var("VOYAGE_API_KEY").map_err(|_| EmbeddingError::MissingApiKey)?;
-            self.embed_batch(chunks, embedding_type, api_key).await
+            self.embed_batch_impl(chunks, embedding_type, api_key).await
         }
     }
 
@@ -197,7 +198,7 @@ impl Embedding for VoyageEmbedding {
     }
 
     fn max_batch_size(&self) -> usize {
-        50
+        1000
     }
 
     async fn ping(&self) -> Result<(), EmbeddingError> {
@@ -214,69 +215,107 @@ impl Embedding for VoyageEmbedding {
 }
 
 impl VoyageEmbedding {
-    /// Internal function to embed a single batch
-    async fn embed_batch(
+    /// Internal boxed-future implementation to allow recursive splitting
+    fn embed_batch_impl(
         &self,
         chunks: Vec<Chunk>,
         embedding_type: EmbeddingType,
         api_key: String,
-    ) -> Result<EmbedResult, EmbeddingError> {
-        let _instant = Instant::now();
-        let _batch_size = chunks.len();
-        let client = get_client();
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<EmbedResult, EmbeddingError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            let _instant = Instant::now();
+            let _batch_size = chunks.len();
+            let client = get_client();
 
-        // Extract texts for the API call
-        let texts: Vec<&str> = chunks
-            .iter()
-            .map(|c| {
-                c.content
-                    .as_ref()
-                    .expect("Chunk missing content for embedding")
-                    .as_str()
-            })
-            .collect();
+            // Extract texts for the API call
+            let texts: Vec<&str> = chunks
+                .iter()
+                .map(|c| {
+                    c.content
+                        .as_ref()
+                        .expect("Chunk missing content for embedding")
+                        .as_str()
+                })
+                .collect();
 
-        let response = client
-            .post("https://api.voyageai.com/v1/embeddings")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .json(&serde_json::json!({
-                "input": texts,
-                "model": "voyage-code-3",
-                "input_type": embedding_type.as_str(),
-                "output_dtype": "float",
-                "encoding_format": "base64"
-            }))
-            .send()
-            .await?;
+            let response = client
+                .post("https://api.voyageai.com/v1/embeddings")
+                .header("Authorization", format!("Bearer {api_key}"))
+                .json(&serde_json::json!({
+                    "input": texts,
+                    "model": "voyage-code-3",
+                    "input_type": embedding_type.as_str(),
+                    "output_dtype": "float",
+                    "encoding_format": "base64"
+                }))
+                .send()
+                .await?;
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(EmbeddingError::ApiError(error_text));
-        }
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                // If batch exceeds model token limit, split in half and retry recursively
+                if error_text
+                    .to_lowercase()
+                    .contains("max allowed tokens per submitted batch")
+                    && chunks.len() > 1
+                {
+                    let mid = chunks.len() / 2;
+                    let left_chunks = chunks[..mid].to_vec();
+                    let right_chunks = chunks[mid..].to_vec();
 
-        let resp: VoyageResponse = response.json().await?;
+                    let left_result = self
+                        .embed_batch_impl(left_chunks, embedding_type, api_key.clone())
+                        .await?;
+                    let right_result = self
+                        .embed_batch_impl(right_chunks, embedding_type, api_key)
+                        .await?;
 
-        // Combine chunks with their embeddings, decoding base64 to f32
-        let embedded_chunks = chunks
-            .into_iter()
-            .zip(resp.data.into_iter())
-            .map(|(mut chunk, data)| {
-                // Decode base64-encoded numpy float32 array
-                match decode_base64_floats(&data.embedding) {
-                    Ok(float_embedding) => {
-                        chunk.vector = Some(float_embedding);
-                    }
-                    Err(_e) => {
-                        // Keep chunk without vector on decode failure
-                    }
+                    let mut combined_chunks =
+                        Vec::with_capacity(left_result.chunks.len() + right_result.chunks.len());
+                    combined_chunks.extend(left_result.chunks);
+                    combined_chunks.extend(right_result.chunks);
+
+                    let total_tokens = match (left_result.total_tokens, right_result.total_tokens) {
+                        (Some(a), Some(b)) => Some(a + b),
+                        (Some(a), None) => Some(a),
+                        (None, Some(b)) => Some(b),
+                        (None, None) => None,
+                    };
+
+                    return Ok(EmbedResult {
+                        chunks: combined_chunks,
+                        total_tokens,
+                    });
                 }
-                chunk
-            })
-            .collect();
 
-        Ok(EmbedResult {
-            chunks: embedded_chunks,
-            total_tokens: resp.usage.map(|u| u.total_tokens),
+                return Err(EmbeddingError::ApiError(error_text));
+            }
+
+            let resp: VoyageResponse = response.json().await?;
+
+            // Combine chunks with their embeddings, decoding base64 to f32
+            let embedded_chunks = chunks
+                .into_iter()
+                .zip(resp.data)
+                .map(|(mut chunk, data)| {
+                    // Decode base64-encoded numpy float32 array
+                    match decode_base64_floats(&data.embedding) {
+                        Ok(float_embedding) => {
+                            chunk.vector = Some(float_embedding);
+                        }
+                        Err(_e) => {
+                            // Keep chunk without vector on decode failure
+                        }
+                    }
+                    chunk
+                })
+                .collect();
+
+            Ok(EmbedResult {
+                chunks: embedded_chunks,
+                total_tokens: resp.usage.map(|u| u.total_tokens),
+            })
         })
     }
 }
@@ -294,8 +333,8 @@ mod tests {
     #[test]
     fn test_voyage_embedding_new() {
         let embedding = VoyageEmbedding::new();
-        // Just test that it can be created - unit structs have size 0
-        assert_eq!(std::mem::size_of_val(&embedding), 0);
+        // Test default concurrency configuration
+        assert_eq!(embedding.concurrency(), 8);
     }
 
     #[test]
