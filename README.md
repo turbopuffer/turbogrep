@@ -12,5 +12,5 @@ cargo install --path .
 
 # Try it!
 cd ~/turbopuffer
-turbogrep --verbose 'grouping similar vectors together'
+tg --verbose 'grouping similar vectors together'
 ```
