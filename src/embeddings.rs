@@ -172,7 +172,7 @@ pub struct VoyageEmbedding {
 
 impl VoyageEmbedding {
     pub fn new() -> Self {
-        Self { concurrency: 5 }
+        Self { concurrency: 8 }
     }
 
     pub fn with_concurrency(concurrency: usize) -> Self {
@@ -198,7 +198,7 @@ impl Embedding for VoyageEmbedding {
     }
 
     fn max_batch_size(&self) -> usize {
-        1000
+        500
     }
 
     async fn ping(&self) -> Result<(), EmbeddingError> {
