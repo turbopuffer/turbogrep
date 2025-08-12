@@ -172,7 +172,7 @@ pub struct VoyageEmbedding {
 
 impl VoyageEmbedding {
     pub fn new() -> Self {
-        Self { concurrency: 8 }
+        Self { concurrency: 5 }
     }
 
     pub fn with_concurrency(concurrency: usize) -> Self {
