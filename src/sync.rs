@@ -12,15 +12,11 @@ pub fn tpuf_chunk_diff(
 ) -> Result<(Vec<Chunk>, Vec<Chunk>)> {
     // With file_hash now part of chunk ID, sync logic is much simpler:
     // Any file change will cause all chunk IDs from that file to change automatically
-    
-    let local_chunk_ids: std::collections::HashSet<u64> = local_chunks
-        .iter()
-        .map(|c| c.id)
-        .collect();
-    let server_chunk_ids: std::collections::HashSet<u64> = server_chunks
-        .iter()
-        .map(|c| c.id)
-        .collect();
+
+    let local_chunk_ids: std::collections::HashSet<u64> =
+        local_chunks.iter().map(|c| c.id).collect();
+    let server_chunk_ids: std::collections::HashSet<u64> =
+        server_chunks.iter().map(|c| c.id).collect();
 
     // Delete any server chunks whose IDs don't exist locally
     // (handles file deletion, file changes, and chunk changes automatically)
@@ -44,6 +40,7 @@ pub async fn tpuf_apply_diff(
     remote_chunks_to_delete: Vec<Chunk>,
     verbose: bool,
     embedding_concurrency: Option<usize>,
+    regex: bool,
 ) -> Result<bool> {
     if local_chunks_to_upload.is_empty() && remote_chunks_to_delete.is_empty() {
         vprintln!("<(°O°)> turbopuffer search index up-to-date");
@@ -65,6 +62,7 @@ pub async fn tpuf_apply_diff(
     }
 
     // Simple streaming pipeline
+    // todo clean up this ~~garbage~~ sub-optimal code structure: no need for an if.
     if !local_chunks_to_upload.is_empty() {
         let total_chunks = local_chunks_to_upload.len();
         let pb = tg_progress_bar(total_chunks as u64);
@@ -82,8 +80,8 @@ pub async fn tpuf_apply_diff(
             Some(concurrency) => embeddings::VoyageEmbedding::with_concurrency(concurrency),
             None => embeddings::VoyageEmbedding::new(),
         };
-        let embedded_stream = embedding_provider
-            .embed_stream(chunk_stream, embeddings::EmbeddingType::Document);
+        let embedded_stream =
+            embedding_provider.embed_stream(chunk_stream, embeddings::EmbeddingType::Document);
 
         // Filter out errors and collect successful chunks
         let successful_chunks = embedded_stream.filter_map(|result| async move {
@@ -99,6 +97,7 @@ pub async fn tpuf_apply_diff(
         // Write all chunks with delete_chunks in the first batch
         turbopuffer::write_chunks(
             namespace,
+            regex,
             successful_chunks,
             if remote_chunks_to_delete.is_empty() {
                 None
@@ -109,26 +108,31 @@ pub async fn tpuf_apply_diff(
         .await?;
     } else if !remote_chunks_to_delete.is_empty() {
         // Only deletions, no uploads - use empty stream
-        turbopuffer::write_chunks(namespace, stream::empty(), Some(remote_chunks_to_delete))
-            .await?;
+        turbopuffer::write_chunks(
+            namespace,
+            regex,
+            stream::empty(),
+            Some(remote_chunks_to_delete),
+        )
+        .await?;
     }
 
     Ok(true) // Content changed
 }
 
-pub async fn tpuf_sync(directory: &str, embedding_concurrency: Option<usize>) -> Result<bool> {
+pub async fn tpuf_sync(
+    directory: &str,
+    embedding_concurrency: Option<usize>,
+    regex: bool,
+) -> Result<bool> {
     let (namespace, root_dir) = project::namespace_and_dir(directory)?;
     vprintln!("namespace={} dir={}", namespace, root_dir);
 
     // Run chunk_files and all_server_chunks concurrently
-    let (local_chunks_res, remote_chunks_res) = tokio::join!(
-        async {
-            chunker::chunk_files(&root_dir)
-        },
-        async {
+    let (local_chunks_res, remote_chunks_res) =
+        tokio::join!(async { chunker::chunk_files(&root_dir) }, async {
             turbopuffer::all_chunks(&namespace).await
-        }
-    );
+        });
 
     let local_chunks = local_chunks_res?;
     let remote_chunks = remote_chunks_res.unwrap_or_default();
@@ -138,5 +142,13 @@ pub async fn tpuf_sync(directory: &str, embedding_concurrency: Option<usize>) ->
         tokio_rayon::spawn(move || tpuf_chunk_diff(local_chunks, remote_chunks)).await?;
 
     // Apply the diff
-    tpuf_apply_diff(&namespace, remote_upload, remote_delete, is_verbose(), embedding_concurrency).await
+    tpuf_apply_diff(
+        &namespace,
+        remote_upload,
+        remote_delete,
+        is_verbose(),
+        embedding_concurrency,
+        regex,
+    )
+    .await
 }

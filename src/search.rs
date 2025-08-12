@@ -1,3 +1,5 @@
+use crate::chunker::Chunk;
+use crate::turbopuffer::TurbopufferError;
 use crate::{chunker, embeddings, project, sync, turbopuffer, vprintln};
 use anyhow::Result;
 use embeddings::Embedding;
@@ -92,6 +94,7 @@ pub async fn search(
     max_count: usize,
     embedding_concurrency: Option<usize>,
     show_scores: bool,
+    regex: bool,
 ) -> Result<String, SearchError> {
     let (namespace, root_dir) = project::namespace_and_dir(directory)
         .map_err(|e| SearchError::NamespaceError(e.to_string()))?;
@@ -100,6 +103,33 @@ pub async fn search(
         return Err(SearchError::EmptyQuery);
     }
 
+    let results = if regex {
+        regex_query(query, &namespace, max_count).await?
+    } else {
+        semantic_query(query, &namespace, max_count, embedding_concurrency).await?
+    };
+
+    // Load content from local files
+    let mut results_with_content = results;
+    for chunk in &mut results_with_content {
+        if let Err(_e) = load_chunk_content(chunk) {
+            // Failed to load content - chunk will have no content
+        }
+    }
+
+    Ok(chunks_to_ripgrep_format(
+        results_with_content,
+        &root_dir,
+        show_scores,
+    ))
+}
+
+async fn semantic_query(
+    query: &str,
+    namespace: &str,
+    max_count: usize,
+    embedding_concurrency: Option<usize>,
+) -> Result<Vec<Chunk>, SearchError> {
     let prompt = query.to_string();
 
     let query_chunk = chunker::Chunk {
@@ -135,19 +165,25 @@ pub async fn search(
     .await?;
     vprintln!("tpuf search took: {:.2?}", instant.elapsed());
 
-    // Load content from local files
-    let mut results_with_content = results;
-    for chunk in &mut results_with_content {
-        if let Err(_e) = load_chunk_content(chunk) {
-            // Failed to load content - chunk will have no content
-        }
-    }
+    Ok(results)
+}
 
-    Ok(chunks_to_ripgrep_format(
-        results_with_content,
-        &root_dir,
-        show_scores,
-    ))
+async fn regex_query(
+    query: &str,
+    namespace: &str,
+    max_count: usize,
+) -> Result<Vec<Chunk>, SearchError> {
+    let instant = std::time::Instant::now();
+    let results = turbopuffer::query_chunks(
+        &namespace,
+        serde_json::json!(["id", "asc"]),
+        max_count as u32,
+        Some(serde_json::json!(["Regex", query])),
+    )
+    .await?;
+    vprintln!("tpuf search took: {:.2?}", instant.elapsed());
+
+    Ok(results)
 }
 
 /// Implements a speculative search pattern that races a search against an index sync.
@@ -159,6 +195,7 @@ pub async fn speculate_search(
     max_count: usize,
     embedding_concurrency: Option<usize>,
     show_scores: bool,
+    regex: bool,
 ) -> Result<String, SearchError> {
     loop {
         let mut search_task = tokio::spawn({
@@ -171,13 +208,14 @@ pub async fn speculate_search(
                     max_count,
                     embedding_concurrency,
                     show_scores,
+                    regex,
                 )
                 .await
             }
         });
         let mut index_task = tokio::spawn({
             let directory = directory.to_string();
-            async move { sync::tpuf_sync(&directory, embedding_concurrency).await }
+            async move { sync::tpuf_sync(&directory, embedding_concurrency, regex).await }
         });
 
         tokio::select! {

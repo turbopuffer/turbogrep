@@ -189,6 +189,7 @@ impl From<Chunk> for ChunkForUpload {
 
 pub async fn write_chunks<S>(
     namespace: &str,
+    regex: bool,
     chunks: S,
     delete_chunks: Option<Vec<Chunk>>,
 ) -> Result<(), TurbopufferError>
@@ -219,7 +220,7 @@ where
                     None
                 };
 
-                async move { write_batch(&namespace, batch, delete_chunks, &api_key).await }
+                async move { write_batch(&namespace, batch, delete_chunks, &api_key, regex).await }
             })
             .buffer_unordered(CONCURRENT_REQUESTS),
     );
@@ -237,6 +238,7 @@ async fn write_batch(
     chunks: Vec<Chunk>,
     delete_chunks: Option<Vec<Chunk>>,
     api_key: &str,
+    regex: bool,
 ) -> Result<usize, TurbopufferError> {
     let _instant = Instant::now();
     let chunk_count = chunks.len();
@@ -252,13 +254,26 @@ async fn write_batch(
         let chunks_for_upload: Vec<ChunkForUpload> =
             chunks.into_iter().map(ChunkForUpload::from).collect();
 
+        let schema = if regex {
+            serde_json::json!({
+                "file_hash": "uint",
+                "chunk_hash": "uint",
+                "content": {
+                    "regex": true
+                }
+            })
+        } else {
+            serde_json::json!({
+                "file_hash": "uint",
+                "chunk_hash": "uint"
+
+            })
+        };
+
         let mut request_body = serde_json::json!({
             "upsert_rows": chunks_for_upload,
             "distance_metric": "cosine_distance",
-            "schema": {
-                "file_hash": "uint",
-                "chunk_hash": "uint"
-            }
+            "schema": schema
         });
 
         if let Some(delete_chunks) = delete_chunks {

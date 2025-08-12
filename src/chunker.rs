@@ -110,7 +110,7 @@ pub struct Chunk {
     pub chunk_hash: u64, // xxhash of chunk content
     pub file_mtime: u64, // File modification time (Unix timestamp)
     pub file_ctime: u64, // File creation time (Unix timestamp)
-    // Content is kept locally but not stored on server for privacy
+    // Content is stored server-side if regex search is enabled.
     pub content: Option<String>,
     // Distance score from similarity search (lower is better, None if not from search)
     #[serde(rename = "$dist")]
@@ -946,7 +946,7 @@ pub fn hash_chunk_files(root_dir: &str) -> Result<Vec<Chunk>> {
                     chunk_hash: file_hash, // Use file_hash as chunk_hash for hash chunks
                     file_mtime,
                     file_ctime,
-                    content: None, // No content for hash chunks
+                    content: None,  // No content for hash chunks
                     distance: None, // Not from search, so no distance score
                 };
 

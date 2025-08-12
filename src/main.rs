@@ -173,6 +173,14 @@ struct Cli {
     /// Show distance scores in output (lower is better)
     #[arg(long)]
     scores: bool,
+
+    /// Build regex / fts indexes (experimental)
+    #[arg(long)]
+    index_regex: bool,
+
+    /// Regex query instead of semantic search (experimental)
+    #[arg(long)]
+    query_regex: bool,
 }
 
 #[tokio::main]
@@ -201,7 +209,7 @@ async fn main() {
         if let Err(e) = turbopuffer::delete_namespace(&namespace).await {
             vprintln!("<(°◯°)> Note: {}", e);
         }
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency)
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.index_regex)
             .await
             .unwrap();
     }
@@ -241,7 +249,7 @@ async fn main() {
             "No search query provided, syncing directory: {}",
             start_directory
         );
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency)
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.index_regex)
             .await
             .unwrap();
     } else if let Some(query) = query {
@@ -271,6 +279,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                cli.query_regex,
             )
             .await
             {
@@ -288,6 +297,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                cli.query_regex,
             )
             .await
             {
@@ -304,6 +314,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                cli.query_regex,
             )
             .await
             {

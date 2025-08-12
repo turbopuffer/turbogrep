@@ -141,7 +141,7 @@ async fn test_tpuf_chunk_diff_with_turbopuffer_integration() {
     let chunk_stream = futures::stream::iter(initial_chunks);
 
     // Upload initial chunks
-    turbopuffer::write_chunks(namespace, chunk_stream, None)
+    turbopuffer::write_chunks(namespace, false, chunk_stream, None)
         .await
         .unwrap();
 
@@ -187,7 +187,7 @@ async fn test_tpuf_chunk_diff_complex_scenario() {
 
     // Upload initial chunks
     let initial_stream = futures::stream::iter(initial_server_chunks.clone());
-    turbopuffer::write_chunks(namespace, initial_stream, None)
+    turbopuffer::write_chunks(namespace, false, initial_stream, None)
         .await
         .unwrap();
 
@@ -206,7 +206,7 @@ async fn test_tpuf_chunk_diff_complex_scenario() {
 
     // With file_hash in chunk ID, different file_hash creates different ID
     // Should upload: file1.rs (different file_hash), file4.js (new)
-    assert_eq!(to_upload.len(), 2); 
+    assert_eq!(to_upload.len(), 2);
     assert!(to_upload.iter().any(|c| c.path == "file1.rs"));
     assert!(to_upload.iter().any(|c| c.path == "file4.js"));
 
@@ -301,6 +301,7 @@ async fn test_tpuf_apply_diff_no_changes() {
         remote_chunks_to_delete,
         false,
         None, // No concurrency override for tests
+        false,
     )
     .await
     .unwrap();
@@ -327,6 +328,7 @@ async fn test_tpuf_apply_diff_upload_only() {
         remote_chunks_to_delete,
         false,
         None, // No concurrency override for tests
+        false,
     )
     .await;
 
@@ -362,7 +364,7 @@ async fn test_tpuf_apply_diff_delete_only() {
         create_test_chunk("file2.py", 1, 15, 789, 101),
     ];
     let chunk_stream = futures::stream::iter(initial_chunks);
-    turbopuffer::write_chunks(namespace, chunk_stream, None)
+    turbopuffer::write_chunks(namespace, false, chunk_stream, None)
         .await
         .unwrap();
 
@@ -380,6 +382,7 @@ async fn test_tpuf_apply_diff_delete_only() {
         remote_chunks_to_delete,
         false,
         None, // No concurrency override for tests
+        false,
     )
     .await
     .unwrap();
@@ -403,7 +406,7 @@ async fn test_tpuf_apply_diff_upload_and_delete() {
 
     // Clean up any existing state from previous test runs
     let _ = turbopuffer::delete_namespace(namespace).await;
-    
+
     // Small delay to ensure cleanup completes
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -413,8 +416,8 @@ async fn test_tpuf_apply_diff_upload_and_delete() {
         create_test_chunk("file2.py", 1, 15, 789, 101),
     ];
     let chunk_stream = futures::stream::iter(initial_chunks);
-    match turbopuffer::write_chunks(namespace, chunk_stream, None).await {
-        Ok(_) => {},
+    match turbopuffer::write_chunks(namespace, false, chunk_stream, None).await {
+        Ok(_) => {}
         Err(_) => {
             eprintln!("Test skipped: Could not upload initial chunks (HTTP client error)");
             let _ = turbopuffer::delete_namespace(namespace).await;
@@ -431,10 +434,13 @@ async fn test_tpuf_apply_diff_upload_and_delete() {
             return;
         }
     };
-    
+
     // Check if initial state matches expectations - if not, likely stale data from previous runs
     if server_chunks.len() != 2 {
-        eprintln!("Test skipped: Server has {} chunks instead of expected 2 - likely stale data", server_chunks.len());
+        eprintln!(
+            "Test skipped: Server has {} chunks instead of expected 2 - likely stale data",
+            server_chunks.len()
+        );
         let _ = turbopuffer::delete_namespace(namespace).await;
         return;
     }
@@ -452,6 +458,7 @@ async fn test_tpuf_apply_diff_upload_and_delete() {
         remote_chunks_to_delete,
         false,
         None, // No concurrency override for tests
+        false,
     )
     .await;
 
@@ -497,6 +504,7 @@ async fn test_tpuf_apply_diff_with_verbose() {
         remote_chunks_to_delete,
         true,
         None, // No concurrency override for tests
+        false,
     )
     .await
     .unwrap();
@@ -519,7 +527,7 @@ async fn test_tpuf_apply_diff_embedding_errors() {
 
     // Clean up any existing state from previous test runs
     let _ = turbopuffer::delete_namespace(namespace).await;
-    
+
     // Small delay to ensure cleanup completes
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -540,6 +548,7 @@ async fn test_tpuf_apply_diff_embedding_errors() {
         remote_chunks_to_delete,
         false,
         None, // No concurrency override for tests
+        false,
     )
     .await;
 
@@ -576,7 +585,7 @@ async fn test_tpuf_apply_diff_large_batch() {
 
     // Clean up any existing state from previous test runs
     let _ = turbopuffer::delete_namespace(namespace).await;
-    
+
     // Small delay to ensure cleanup completes
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -600,6 +609,7 @@ async fn test_tpuf_apply_diff_large_batch() {
         remote_chunks_to_delete,
         false,
         None, // No concurrency override for tests
+        false,
     )
     .await;
 
@@ -621,7 +631,9 @@ async fn test_tpuf_apply_diff_large_batch() {
         Err(_) => {
             // If embedding fails (e.g., API unavailable), that's acceptable for this test
             // The test is primarily checking that large batches don't cause HTTP client crashes
-            eprintln!("Test passed: Large batch processed without HTTP client crashes (embeddings failed, which is acceptable)");
+            eprintln!(
+                "Test passed: Large batch processed without HTTP client crashes (embeddings failed, which is acceptable)"
+            );
         }
     }
 
@@ -636,7 +648,7 @@ async fn test_tpuf_apply_diff_complex_scenario() {
 
     // Clean up any existing state from previous test runs
     let _ = turbopuffer::delete_namespace(namespace).await;
-    
+
     // Small delay to ensure cleanup completes
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -647,8 +659,8 @@ async fn test_tpuf_apply_diff_complex_scenario() {
         create_test_chunk("file3.go", 1, 20, 500, 600),
     ];
     let chunk_stream = futures::stream::iter(initial_chunks);
-    match turbopuffer::write_chunks(namespace, chunk_stream, None).await {
-        Ok(_) => {},
+    match turbopuffer::write_chunks(namespace, false, chunk_stream, None).await {
+        Ok(_) => {}
         Err(_) => {
             eprintln!("Test skipped: Could not upload initial chunks (HTTP client error)");
             let _ = turbopuffer::delete_namespace(namespace).await;
@@ -685,6 +697,7 @@ async fn test_tpuf_apply_diff_complex_scenario() {
         remote_chunks_to_delete,
         false,
         None, // No concurrency override for tests
+        false,
     )
     .await;
 

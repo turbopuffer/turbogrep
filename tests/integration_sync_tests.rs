@@ -12,7 +12,7 @@ async fn test_diff_apply_roundtrip_basic() {
 
     // Clean up any existing state from previous test runs
     let _ = turbopuffer::delete_namespace(namespace).await;
-    
+
     // Small delay to ensure cleanup completes
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -24,7 +24,7 @@ async fn test_diff_apply_roundtrip_basic() {
 
     // Upload initial chunks to server
     let chunk_stream = futures::stream::iter(initial_server_chunks.clone());
-    match turbopuffer::write_chunks(namespace, chunk_stream, None).await {
+    match turbopuffer::write_chunks(namespace, false, chunk_stream, None).await {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Failed to upload initial chunks: {}", e);
@@ -54,8 +54,7 @@ async fn test_diff_apply_roundtrip_basic() {
     assert!(to_delete.iter().any(|c| c.path == "file1.rs"));
 
     // Step 2: Apply the diff
-    let changed = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None)
-        .await;
+    let changed = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None, false).await;
 
     match changed {
         Ok(changed) => {
@@ -83,10 +82,12 @@ async fn test_diff_apply_roundtrip_basic() {
     // file1.rs should be deleted, but a new version might be uploaded if we had uploaded it
     let final_paths: Vec<String> = final_server_chunks.iter().map(|c| c.path.clone()).collect();
     assert!(final_paths.contains(&"file2.py".to_string()));
-    
+
     // file3.go should be present if embedding succeeded
     if !final_paths.contains(&"file3.go".to_string()) {
-        eprintln!("Test note: file3.go not found - likely embedding failed for new file, which is acceptable");
+        eprintln!(
+            "Test note: file3.go not found - likely embedding failed for new file, which is acceptable"
+        );
         // If embedding failed for file3.go, skip the rest of the test
         let _ = turbopuffer::delete_namespace(namespace).await;
         return;
@@ -114,7 +115,7 @@ async fn test_diff_apply_roundtrip_complete_replacement() {
 
     // Clean up any existing state from previous test runs
     let _ = turbopuffer::delete_namespace(namespace).await;
-    
+
     // Small delay to ensure cleanup completes
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -127,7 +128,7 @@ async fn test_diff_apply_roundtrip_complete_replacement() {
 
     // Upload initial chunks
     let chunk_stream = futures::stream::iter(initial_server_chunks.clone());
-    turbopuffer::write_chunks(namespace, chunk_stream, None)
+    turbopuffer::write_chunks(namespace, false, chunk_stream, None)
         .await
         .unwrap();
 
@@ -147,8 +148,7 @@ async fn test_diff_apply_roundtrip_complete_replacement() {
     assert_eq!(to_delete.len(), 3); // old1.rs, old2.py, old3.go
 
     // Step 2: Apply diff
-    let changed = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None)
-        .await;
+    let changed = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None, false).await;
 
     match changed {
         Ok(changed) => {
@@ -169,9 +169,11 @@ async fn test_diff_apply_roundtrip_complete_replacement() {
     // Should only have new files (if embeddings succeeded)
     let has_new_files = final_paths.contains(&"new1.js".to_string())
         || final_paths.contains(&"new2.ts".to_string());
-    
+
     if !has_new_files {
-        eprintln!("Test note: No new files found - likely embedding failed for new files, which is acceptable");
+        eprintln!(
+            "Test note: No new files found - likely embedding failed for new files, which is acceptable"
+        );
         // If embedding failed for new files, skip the rest of the test
         let _ = turbopuffer::delete_namespace(namespace).await;
         return;
@@ -200,7 +202,7 @@ async fn test_diff_apply_idempotent() {
     let initial_chunks = vec![create_test_chunk("file1.rs", 1, 10, 100, 200)];
 
     let chunk_stream = futures::stream::iter(initial_chunks.clone());
-    turbopuffer::write_chunks(namespace, chunk_stream, None)
+    turbopuffer::write_chunks(namespace, false, chunk_stream, None)
         .await
         .unwrap();
 
@@ -218,7 +220,7 @@ async fn test_diff_apply_idempotent() {
     assert_eq!(to_delete.len(), 0);
 
     // Step 2: Apply empty diff
-    let changed = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None)
+    let changed = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None, false)
         .await
         .unwrap();
 
@@ -263,9 +265,10 @@ async fn test_diff_apply_progressive_sync() {
     assert_eq!(to_upload_r1.len(), 2);
     assert_eq!(to_delete_r1.len(), 0);
 
-    let changed_r1 = sync::tpuf_apply_diff(namespace, to_upload_r1, to_delete_r1, false, None)
-        .await
-        .unwrap();
+    let changed_r1 =
+        sync::tpuf_apply_diff(namespace, to_upload_r1, to_delete_r1, false, None, false)
+            .await
+            .unwrap();
     assert!(changed_r1);
 
     // Small delay to avoid API rate limiting
@@ -292,9 +295,10 @@ async fn test_diff_apply_progressive_sync() {
     assert_eq!(to_upload_r2.len(), 1); // file3.go (new)
     assert_eq!(to_delete_r2.len(), 1); // file1.rs (stale)
 
-    let changed_r2 = sync::tpuf_apply_diff(namespace, to_upload_r2, to_delete_r2, false, None)
-        .await
-        .unwrap();
+    let changed_r2 =
+        sync::tpuf_apply_diff(namespace, to_upload_r2, to_delete_r2, false, None, false)
+            .await
+            .unwrap();
     assert!(changed_r2);
 
     // Small delay to avoid API rate limiting
@@ -322,9 +326,10 @@ async fn test_diff_apply_progressive_sync() {
     assert!(to_upload_r3.len() >= 1); // At least file1.rs
     assert!(to_delete_r3.len() >= 1); // At least file2.py
 
-    let changed_r3 = sync::tpuf_apply_diff(namespace, to_upload_r3, to_delete_r3, false, None)
-        .await
-        .unwrap();
+    let changed_r3 =
+        sync::tpuf_apply_diff(namespace, to_upload_r3, to_delete_r3, false, None, false)
+            .await
+            .unwrap();
     assert!(changed_r3);
 
     // Final verification: should match local state
@@ -356,7 +361,7 @@ async fn test_diff_apply_error_recovery() {
     let initial_chunks = vec![create_test_chunk("file1.rs", 1, 10, 100, 200)];
 
     let chunk_stream = futures::stream::iter(initial_chunks);
-    turbopuffer::write_chunks(namespace, chunk_stream, None)
+    turbopuffer::write_chunks(namespace, false, chunk_stream, None)
         .await
         .unwrap();
 
@@ -377,7 +382,7 @@ async fn test_diff_apply_error_recovery() {
     assert_eq!(to_upload[0].path, "file2.py");
 
     // Apply diff (should succeed)
-    let result = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None).await;
+    let result = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None, false).await;
 
     match result {
         Ok(changed) => {
@@ -424,7 +429,7 @@ async fn test_diff_apply_consistency_check() {
     ];
 
     let chunk_stream = futures::stream::iter(initial_server_chunks);
-    turbopuffer::write_chunks(namespace, chunk_stream, None)
+    turbopuffer::write_chunks(namespace, false, chunk_stream, None)
         .await
         .unwrap();
 
@@ -440,7 +445,10 @@ async fn test_diff_apply_consistency_check() {
     // Step 1: Compute what changes are needed
     let current_server_chunks = turbopuffer::all_server_chunks(namespace).await.unwrap();
     // With file_hash in chunk ID, the number of chunks may vary
-    assert!(!current_server_chunks.is_empty(), "Should have initial server chunks");
+    assert!(
+        !current_server_chunks.is_empty(),
+        "Should have initial server chunks"
+    );
 
     let (to_upload, to_delete) =
         sync::tpuf_chunk_diff(desired_local_chunks.clone(), current_server_chunks).unwrap();
@@ -457,7 +465,7 @@ async fn test_diff_apply_consistency_check() {
     assert!(delete_paths.contains(&&"stale.js".to_string()));
 
     // Step 2: Apply the diff
-    let changed = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None)
+    let changed = sync::tpuf_apply_diff(namespace, to_upload, to_delete, false, None, false)
         .await
         .unwrap();
 
@@ -489,7 +497,7 @@ async fn test_diff_apply_cross_validation() {
 
     // Clean up any existing state from previous test runs
     let _ = turbopuffer::delete_namespace(namespace).await;
-    
+
     // Small delay to ensure cleanup completes
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -502,7 +510,7 @@ async fn test_diff_apply_cross_validation() {
 
     // Upload initial state
     let chunk_stream = futures::stream::iter(initial_server_chunks.clone());
-    turbopuffer::write_chunks(namespace, chunk_stream, None)
+    turbopuffer::write_chunks(namespace, false, chunk_stream, None)
         .await
         .unwrap();
 
@@ -529,8 +537,8 @@ async fn test_diff_apply_cross_validation() {
     assert!(delete_paths_1.contains(&&"to_delete.go".to_string()));
 
     // Step 2: Apply the diff
-    let changed_1 = sync::tpuf_apply_diff(namespace, to_upload_1, to_delete_1, false, None)
-        .await;
+    let changed_1 =
+        sync::tpuf_apply_diff(namespace, to_upload_1, to_delete_1, false, None, false).await;
 
     match changed_1 {
         Ok(changed_1) => {
@@ -562,8 +570,8 @@ async fn test_diff_apply_cross_validation() {
     assert_eq!(to_delete_2.len(), 0); // No more deletions needed
 
     // Step 4: Apply second diff
-    let changed_2 = sync::tpuf_apply_diff(namespace, to_upload_2, to_delete_2, false, None)
-        .await;
+    let changed_2 =
+        sync::tpuf_apply_diff(namespace, to_upload_2, to_delete_2, false, None, false).await;
 
     match changed_2 {
         Ok(changed_2) => {
@@ -584,8 +592,11 @@ async fn test_diff_apply_cross_validation() {
 
     // Should be fully synchronized now (unless some embeddings failed)
     if to_upload_3.len() > 0 || to_delete_3.len() > 0 {
-        eprintln!("Test note: Sync incomplete - {} uploads, {} deletes remaining (likely due to embedding failures)", 
-                  to_upload_3.len(), to_delete_3.len());
+        eprintln!(
+            "Test note: Sync incomplete - {} uploads, {} deletes remaining (likely due to embedding failures)",
+            to_upload_3.len(),
+            to_delete_3.len()
+        );
         // This is acceptable when embedding APIs fail
     } else {
         // Perfect sync achieved
