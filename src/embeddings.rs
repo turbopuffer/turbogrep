@@ -198,7 +198,7 @@ impl Embedding for VoyageEmbedding {
     }
 
     fn max_batch_size(&self) -> usize {
-        500
+        256
     }
 
     async fn ping(&self) -> Result<(), EmbeddingError> {
