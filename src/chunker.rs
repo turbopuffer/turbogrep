@@ -303,8 +303,7 @@ impl FiletypeMatcher {
                         r#"
                         (fenced_code_block) @function
                         (list) @function
-                        ((paragraph) @function
-                            (#not-has-ancestor? @function "list"))
+                        (paragraph) @function
                         "#,
                     ));
                 }
