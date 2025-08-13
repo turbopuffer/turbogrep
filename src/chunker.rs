@@ -4,6 +4,7 @@ use ignore::WalkBuilder;
 use ignore::types::{FileTypeDef, TypesBuilder};
 use num_cpus;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -88,6 +89,79 @@ pub fn extract_function_with_comments<'a>(
     let result = &source[comment_start_byte..function_end_byte];
 
     result
+}
+
+/// Markdown specific extraction that keeps the surrounding header in context of each paragraph chunk
+fn extract_paragraph_with_heading<'a>(
+    paragraph_node: Node,
+    source: &'a str,
+) -> Option<Cow<'a, str>> {
+    let paragraph_start_byte = paragraph_node.start_byte();
+    let paragraph_end_byte = paragraph_node.end_byte();
+    let paragraph_start_line = paragraph_node.start_position().row;
+
+    // Walk up the tree to find all nodes that could contain headings
+    let mut search_contexts = Vec::new();
+    let mut current_node = paragraph_node;
+
+    // Walk up the ancestry to collect all potential contexts
+    while let Some(parent) = current_node.parent() {
+        search_contexts.push(parent);
+        current_node = parent;
+
+        if parent.kind() == "list" {
+            return None;
+        }
+
+        // Stop at document root
+        if parent.kind() == "document" {
+            break;
+        }
+    }
+
+    // Find the closest heading before this paragraph
+    let mut best_heading: Option<Node> = None;
+    let mut closest_distance = usize::MAX;
+
+    for &context in &search_contexts {
+        let mut cursor = context.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let node = cursor.node();
+                if matches!(node.kind(), "atx_heading" | "setext_heading") {
+                    let heading_line = node.start_position().row;
+                    if heading_line < paragraph_start_line {
+                        let distance = paragraph_start_line - heading_line;
+                        if distance < closest_distance {
+                            best_heading = Some(node);
+                            closest_distance = distance;
+                        }
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        if best_heading.is_some() {
+            break;
+        }
+    }
+
+    if let Some(heading) = best_heading {
+        let heading_start_byte = heading.start_byte();
+        let heading_end_byte = heading.end_byte();
+        let x = [
+            &source[heading_start_byte..heading_end_byte],
+            &source[paragraph_start_byte..paragraph_end_byte],
+        ]
+        .join("\n");
+        Some(Cow::Owned(x))
+    } else {
+        Some(Cow::Borrowed(
+            &source[paragraph_start_byte..paragraph_end_byte],
+        ))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -222,6 +296,17 @@ impl FiletypeMatcher {
                         "(function_definition) @function",
                     ));
                 }
+                "md" | "markdown" => {
+                    return Some((
+                        "markdown",
+                        tree_sitter_md::LANGUAGE.into(),
+                        r#"
+                        (fenced_code_block) @function
+                        (list) @function
+                        (paragraph) @function
+                        "#,
+                    ));
+                }
                 _ => continue,
             }
         }
@@ -326,8 +411,16 @@ pub fn chunk(
             _function_count += 1;
 
             // Extract function content with preceding comments
-            let function_with_comments =
-                extract_function_with_comments(&tree, capture.node, content);
+            let function_with_comments = if lang_name == "markdown"
+                && (capture.node.kind() == "paragraph" || capture.node.kind() == "list")
+            {
+                let Some(chunk) = extract_paragraph_with_heading(capture.node, content) else {
+                    continue;
+                };
+                chunk
+            } else {
+                Cow::Borrowed(extract_function_with_comments(&tree, capture.node, content))
+            };
 
             let start_pos = capture.node.start_position();
             let end_pos = capture.node.end_position();
@@ -696,6 +789,111 @@ func buildFiltersForFastPathCheck(uniqueCheckExpr RelExpr) FiltersExpr {
     }
 
     #[test]
+    fn test_extract_paragraph_with_heading() {
+        let markdown_content = r#"# Introduction
+
+This is the introduction paragraph that should include the heading.
+
+## Features
+
+Here are the main features:
+
+- Feature 1
+- Feature 2
+
+This paragraph should include the Features heading.
+
+### Sub Feature
+
+This is under a sub-heading.
+
+## Another Section
+
+This paragraph is under another section heading.
+
+Some text without a heading at the start."#;
+
+        // Parse with tree-sitter
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_md::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(markdown_content, None).unwrap();
+
+        // Find paragraph nodes
+        let query = Query::new(&tree_sitter_md::LANGUAGE.into(), "(paragraph) @paragraph").unwrap();
+
+        let mut cursor = QueryCursor::new();
+        let captures = cursor.captures(&query, tree.root_node(), markdown_content.as_bytes());
+
+        use tree_sitter::StreamingIterator;
+        let mut captures_iter = captures;
+
+        // Test first paragraph (should include "# Introduction")
+        if let Some((match_, _)) = captures_iter.next() {
+            let paragraph_node = match_.captures[0].node;
+            let content_with_heading =
+                extract_paragraph_with_heading(paragraph_node, markdown_content).unwrap();
+
+            assert!(
+                content_with_heading.contains("# Introduction"),
+                "Should include the main heading"
+            );
+            assert!(
+                content_with_heading.contains("This is the introduction paragraph"),
+                "Should include paragraph content: {content_with_heading:?}"
+            );
+            assert!(
+                !content_with_heading.contains("## Features"),
+                "Should not include subsequent sections"
+            );
+        } else {
+            panic!("Should find at least one paragraph");
+        }
+
+        // each of the bullets and the paragraph before the bullet list counts as a paragraph
+        captures_iter.next();
+        captures_iter.next();
+        captures_iter.next();
+
+        // Test paragraph under Features section
+        if let Some((match_, _)) = captures_iter.next() {
+            let paragraph_node = match_.captures[0].node;
+            let content_with_heading =
+                extract_paragraph_with_heading(paragraph_node, markdown_content).unwrap();
+
+            assert!(
+                content_with_heading.contains("## Features"),
+                "Should include the Features heading"
+            );
+            assert!(
+                content_with_heading.contains("This paragraph should include the Features heading"),
+                "Should include paragraph content: {content_with_heading:?}",
+            );
+            assert!(
+                !content_with_heading.contains("# Introduction"),
+                "Should not include earlier sections"
+            );
+        }
+
+        // Test paragraph under sub-heading
+        if let Some((match_, _)) = captures_iter.next() {
+            let paragraph_node = match_.captures[0].node;
+            let content_with_heading =
+                extract_paragraph_with_heading(paragraph_node, markdown_content).unwrap();
+
+            assert!(
+                content_with_heading.contains("### Sub Feature"),
+                "Should include the sub-heading"
+            );
+            assert!(
+                content_with_heading.contains("This is under a sub-heading"),
+                "Should include paragraph content"
+            );
+        }
+    }
+
+    #[test]
     fn test_chunk_test_file() {
         use std::path::Path;
 
@@ -946,7 +1144,7 @@ pub fn hash_chunk_files(root_dir: &str) -> Result<Vec<Chunk>> {
                     chunk_hash: file_hash, // Use file_hash as chunk_hash for hash chunks
                     file_mtime,
                     file_ctime,
-                    content: None, // No content for hash chunks
+                    content: None,  // No content for hash chunks
                     distance: None, // Not from search, so no distance score
                 };
 
