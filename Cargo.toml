@@ -21,6 +21,7 @@ tree-sitter-c = "0.24.1"
 tree-sitter-cpp = "0.23.4"
 tree-sitter-ruby = "0.23.0"
 tree-sitter-bash = "0.23.1"
+tree-sitter-md = "0.3.2"
 
 thiserror = "1.0"
 anyhow = "1.0"
@@ -40,6 +41,7 @@ tokio-rayon = "2.1.0"
 rand = "0.8"
 owo-colors = { version = "4.1", features = ["supports-colors"] }
 supports-color = "3"
+itertools = "0.14.0"
 
 
 [dev-dependencies]
