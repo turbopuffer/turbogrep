@@ -1,6 +1,7 @@
 use crate::{chunker, embeddings, project, sync, turbopuffer, vprintln};
 use anyhow::Result;
 use embeddings::Embedding;
+use owo_colors::OwoColorize;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -51,6 +52,7 @@ fn chunks_to_ripgrep_format(
     chunks: Vec<chunker::Chunk>,
     root_dir: &str,
     show_scores: bool,
+    use_color: bool,
 ) -> String {
     chunks
         .into_iter()
@@ -70,13 +72,38 @@ fn chunks_to_ripgrep_format(
 
             if show_scores {
                 if let Some(distance) = chunk.distance {
+                    if use_color {
+                        format!(
+                            "{}:{}:{}:{}",
+                            format!("{}", relative_path).magenta().bold(),
+                            format!("{}", chunk.start_line).green(),
+                            format!("{:.4}", distance).yellow(),
+                            preview
+                        )
+                    } else {
+                        format!(
+                            "{}:{}:{:.4}:{}",
+                            relative_path, chunk.start_line, distance, preview
+                        )
+                    }
+                } else if use_color {
                     format!(
-                        "{}:{}:{:.4}:{}",
-                        relative_path, chunk.start_line, distance, preview
+                        "{}:{}:{}:{}",
+                        format!("{}", relative_path).magenta().bold(),
+                        format!("{}", chunk.start_line).green(),
+                        "n/a".yellow(),
+                        preview
                     )
                 } else {
                     format!("{}:{}:n/a:{}", relative_path, chunk.start_line, preview)
                 }
+            } else if use_color {
+                format!(
+                    "{}:{}:{}",
+                    format!("{}", relative_path).magenta().bold(),
+                    format!("{}", chunk.start_line).green(),
+                    preview
+                )
             } else {
                 format!("{}:{}:{}", relative_path, chunk.start_line, preview)
             }
@@ -91,6 +118,7 @@ pub async fn search(
     max_count: usize,
     embedding_concurrency: Option<usize>,
     show_scores: bool,
+    use_color: bool,
 ) -> Result<String, SearchError> {
     let (namespace, root_dir) = project::namespace_and_dir(directory)
         .map_err(|e| SearchError::NamespaceError(e.to_string()))?;
@@ -146,6 +174,7 @@ pub async fn search(
         results_with_content,
         &root_dir,
         show_scores,
+        use_color,
     ))
 }
 
@@ -158,6 +187,7 @@ pub async fn speculate_search(
     max_count: usize,
     embedding_concurrency: Option<usize>,
     show_scores: bool,
+    use_color: bool,
 ) -> Result<String, SearchError> {
     loop {
         let mut search_task = tokio::spawn({
@@ -170,6 +200,7 @@ pub async fn speculate_search(
                     max_count,
                     embedding_concurrency,
                     show_scores,
+                    use_color,
                 )
                 .await
             }
@@ -274,7 +305,7 @@ mod tests {
             distance: None,
         }];
 
-        let result = chunks_to_ripgrep_format(chunks, "/project", false);
+        let result = chunks_to_ripgrep_format(chunks, "/project", false, false);
         let expected = "src/main.rs:10:fn main() {";
 
         assert_eq!(result, expected);

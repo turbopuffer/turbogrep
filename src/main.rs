@@ -2,6 +2,7 @@ use crate::embeddings::Embedding;
 use anyhow::Result;
 use clap::Parser;
 use owo_colors::OwoColorize;
+use supports_color::Stream;
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use std::path::Path;
@@ -105,6 +106,13 @@ fn sample_random_chunks(
 }
 
 /// Fast semantic code search powered by AI embeddings and turbopuffer
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
 #[derive(Parser)]
 #[command(name = "tg")]
 #[command(version = "0.1.0")]
@@ -173,12 +181,26 @@ struct Cli {
     /// Show distance scores in output (lower is better)
     #[arg(long)]
     scores: bool,
+
+    /// When to use colors: auto, always, never (like ripgrep)
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    color: ColorChoice,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     turbogrep::set_verbose(cli.verbose);
+    // Determine effective color choice similar to ripgrep
+    // Priority: --color overrides, then NO_COLOR env disables, then auto based on terminal support
+    let mut use_color = match cli.color {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => supports_color::on(Stream::Stdout).is_some(),
+    };
+    if std::env::var_os("NO_COLOR").is_some() {
+        use_color = false;
+    }
 
     if let Err(e) = config::load_or_init_settings().await {
         eprintln!("<(°!°)> Error loading settings: {}", e);
@@ -214,16 +236,19 @@ async fn main() {
 
         for chunk in sampled_chunks {
             if let Some(content) = &chunk.content {
-                println!(
-                    "{}",
-                    format!(
+                if use_color {
+                    let path = format!("{}", chunk.path.magenta().bold());
+                    let start = format!("{}", chunk.start_line.green());
+                    let end = format!("{}", chunk.end_line.green());
+                    println!("{}:{}:{}", path, start, end);
+                } else {
+                    println!(
                         "{path}:{start_line}:{end_line}",
                         path = chunk.path,
                         start_line = chunk.start_line,
                         end_line = chunk.end_line
-                    )
-                    .bright_cyan()
-                );
+                    );
+                }
                 println!("{}", content);
                 println!(); // Empty line separator
             }
@@ -271,6 +296,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                use_color,
             )
             .await
             {
@@ -288,6 +314,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                use_color,
             )
             .await
             {
@@ -304,6 +331,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                use_color,
             )
             .await
             {
