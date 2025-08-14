@@ -66,8 +66,7 @@ fn chunks_to_ripgrep_format(
                 .content
                 .as_ref()
                 .and_then(|content| content.lines().next())
-                .unwrap_or("[no content]")
-                .trim();
+                .unwrap_or("[no content]");
 
             if show_scores {
                 if let Some(distance) = chunk.distance {
