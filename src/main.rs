@@ -35,16 +35,14 @@ fn parse_cli_args(cli: &Cli) -> Result<(Option<String>, String), String> {
                 (None, pattern.clone())
             } else if Path::new(pattern).exists() {
                 // Path exists but is not a directory - this is an error
-                return Err(format!("'{}' exists but is not a directory", pattern));
+                return Err(format!(r#"'{pattern}' exists but is not a directory"#));
             } else if pattern.starts_with('/') || pattern.starts_with('.') {
                 // Argument looks like a path but doesn't exist - warn user
                 eprintln!(
-                    "<(°~°)> Warning: '{}' looks like a directory path but doesn't exist.",
-                    pattern
+                    "<(°~°)> Warning: '{pattern}' looks like a directory path but doesn't exist.",
                 );
                 eprintln!(
-                    "<(°◯°)> Treating '{}' as a search query and searching current directory.",
-                    pattern
+                    "<(°◯°)> Treating '{pattern}' as a search query and searching current directory.",
                 );
                 eprintln!("<(°◯°)> If you meant to specify a directory, please check the path.");
                 let directory = std::env::current_dir()
@@ -181,7 +179,7 @@ async fn main() {
     turbogrep::set_verbose(cli.verbose);
 
     if let Err(e) = config::load_or_init_settings().await {
-        eprintln!("<(°!°)> Error loading settings: {}", e);
+        eprintln!("<(°!°)> Error loading settings: {e}");
         return;
     }
 
@@ -189,7 +187,7 @@ async fn main() {
     let (query, start_directory) = match parse_cli_args(&cli) {
         Ok(result) => result,
         Err(e) => {
-            eprintln!("<(°!°)> Error: {}", e);
+            eprintln!("<(°!°)> Error: {e}");
             return;
         }
     };
@@ -274,9 +272,9 @@ async fn main() {
             )
             .await
             {
-                Ok(results) => println!("{}", results),
+                Ok(results) => println!("{results}"),
                 Err(e) => {
-                    eprintln!("<(°!°)> Search failed: {}", e);
+                    eprintln!("<(°!°)> Search failed: {e}");
                     std::process::exit(1);
                 }
             }
@@ -291,9 +289,9 @@ async fn main() {
             )
             .await
             {
-                Ok(results) => println!("{}", results),
+                Ok(results) => println!("{results}"),
                 Err(e) => {
-                    eprintln!("<(°!°)> Search failed: {}", e);
+                    eprintln!("<(°!°)> Search failed: {e}");
                     std::process::exit(1);
                 }
             }
@@ -307,9 +305,9 @@ async fn main() {
             )
             .await
             {
-                Ok(results) => println!("{}", results),
+                Ok(results) => println!("{results}"),
                 Err(e) => {
-                    eprintln!("<(°!°)> Search failed: {}", e);
+                    eprintln!("<(°!°)> Search failed: {e}");
                     std::process::exit(1);
                 }
             }
