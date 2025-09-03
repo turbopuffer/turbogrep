@@ -171,6 +171,10 @@ struct Cli {
     /// Show distance scores in output (lower is better)
     #[arg(long)]
     scores: bool,
+
+    /// Filter files by glob (repeatable)
+    #[arg(short = 'g', long = "glob", value_name = "GLOB")]
+    glob: Vec<String>,
 }
 
 #[tokio::main]
@@ -269,6 +273,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                &cli.glob,
             )
             .await
             {
@@ -286,6 +291,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                &cli.glob,
             )
             .await
             {
@@ -302,6 +308,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                &cli.glob,
             )
             .await
             {
