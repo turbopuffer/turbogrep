@@ -91,6 +91,7 @@ pub async fn search(
     max_count: usize,
     embedding_concurrency: Option<usize>,
     show_scores: bool,
+    glob_patterns: &Vec<String>,
 ) -> Result<String, SearchError> {
     let (namespace, root_dir) = project::namespace_and_dir(directory)
         .map_err(|e| SearchError::NamespaceError(e.to_string()))?;
@@ -124,12 +125,53 @@ pub async fn search(
         .clone();
 
     let instant = std::time::Instant::now();
-    // Search turbopuffer using existing query_chunks
+    // Build filters from --glob patterns
+    let (include_globs, exclude_globs): (Vec<&str>, Vec<&str>) = glob_patterns
+        .iter()
+        .map(|s| s.as_str())
+        .partition(|g| !g.starts_with('!'));
+
+    let include_filters: Vec<serde_json::Value> = include_globs
+        .iter()
+        .map(|g| serde_json::json!(["path", "Glob", g]))
+        .collect();
+    let exclude_filters: Vec<serde_json::Value> = exclude_globs
+        .iter()
+        .map(|g| {
+            let pat = &g[1..];
+            serde_json::json!(["path", "Glob", pat])
+        })
+        .collect();
+
+    let include_expr: Option<serde_json::Value> = if include_filters.is_empty() {
+        None
+    } else if include_filters.len() == 1 {
+        Some(include_filters[0].clone())
+    } else {
+        Some(serde_json::json!(["Or", include_filters]))
+    };
+
+    let exclude_expr: Option<serde_json::Value> = if exclude_filters.is_empty() {
+        None
+    } else if exclude_filters.len() == 1 {
+        Some(serde_json::json!(["Not", exclude_filters[0].clone()]))
+    } else {
+        Some(serde_json::json!(["Not", serde_json::json!(["Or", exclude_filters])]))
+    };
+
+    let combined_filters: Option<serde_json::Value> = match (include_expr, exclude_expr) {
+        (Some(inc), Some(exc)) => Some(serde_json::json!(["And", [inc, exc]])),
+        (Some(inc), None) => Some(inc),
+        (None, Some(exc)) => Some(exc),
+        (None, None) => None,
+    };
+
+    // Search turbopuffer using query_chunks with optional filters
     let results = turbopuffer::query_chunks(
         &namespace,
         serde_json::json!(["vector", "ANN", query_vector]),
         max_count as u32,
-        None,
+        combined_filters,
     )
     .await?;
     vprintln!("tpuf search took: {:.2?}", instant.elapsed());
@@ -158,11 +200,13 @@ pub async fn speculate_search(
     max_count: usize,
     embedding_concurrency: Option<usize>,
     show_scores: bool,
+    glob_patterns: &Vec<String>,
 ) -> Result<String, SearchError> {
     loop {
         let mut search_task = tokio::spawn({
             let query = query.to_string();
             let directory = directory.to_string();
+            let globs = glob_patterns.clone();
             async move {
                 search(
                     &query,
@@ -170,6 +214,7 @@ pub async fn speculate_search(
                     max_count,
                     embedding_concurrency,
                     show_scores,
+                    &globs,
                 )
                 .await
             }
