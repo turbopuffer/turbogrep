@@ -4,6 +4,7 @@ use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose};
 use futures::future::join_all;
 use futures::stream::{Stream, StreamExt};
+use itertools::Itertools;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -249,8 +250,15 @@ async fn write_batch(
     let client = get_client();
 
     let request_body = tokio_rayon::spawn(move || {
-        let chunks_for_upload: Vec<ChunkForUpload> =
-            chunks.into_iter().map(ChunkForUpload::from).collect();
+        let chunks_for_upload: Vec<ChunkForUpload> = chunks
+            .into_iter()
+            // I think duplicates can happen if the same function somehow appears on the same line,
+            // which could happen in some languages... We should fix this in the chunker though.
+            // This failed on the Ruby on Rails codebase.
+            .sorted_by_key(|c| c.id)
+            .dedup_by(|a, b| a.id == b.id)
+            .map(ChunkForUpload::from)
+            .collect();
 
         let mut request_body = serde_json::json!({
             "upsert_rows": chunks_for_upload,
