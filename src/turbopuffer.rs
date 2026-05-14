@@ -152,6 +152,8 @@ struct ChunkForUpload {
     chunk_hash: u64,
     file_mtime: u64,
     file_ctime: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
 }
 
 impl From<Chunk> for ChunkForUpload {
@@ -184,6 +186,7 @@ impl From<Chunk> for ChunkForUpload {
             chunk_hash: chunk.chunk_hash,
             file_mtime: chunk.file_mtime,
             file_ctime: chunk.file_ctime,
+            content: chunk.content,
         }
     }
 }
