@@ -199,7 +199,7 @@ pub async fn write_chunks<S>(
 where
     S: Stream<Item = Chunk> + Send + 'static,
 {
-    const BATCH_SIZE: usize = 1000;
+    const BATCH_SIZE: usize = 30;
     const CONCURRENT_REQUESTS: usize = 4; // Reduced to prevent HTTP client exhaustion
 
     let api_key =
@@ -268,7 +268,15 @@ async fn write_batch(
             "distance_metric": "cosine_distance",
             "schema": {
                 "file_hash": "uint",
-                "chunk_hash": "uint"
+                "chunk_hash": "uint",
+                "content": {
+                    "type": "string",
+                    "filterable": false,
+                    "full_text_search": true,
+                    "embed": {
+                        "model": "voyage/voyage-code-3"
+                    }
+                }
             }
         });
 

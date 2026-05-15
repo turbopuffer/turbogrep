@@ -49,16 +49,8 @@ pub async fn load_or_init_settings() -> Result<()> {
     let mut config_changed = false;
 
     if settings.turbopuffer_region.is_none() {
-        match crate::turbopuffer::find_closest_region().await {
-            Ok(best_region) => {
-                settings.turbopuffer_region = Some(best_region);
-                config_changed = true;
-            }
-            Err(_e) => {
-                settings.turbopuffer_region = Some("gcp-us-east4".to_string());
-                config_changed = true;
-            }
-        }
+        settings.turbopuffer_region = Some("gcp-europe-west3".to_string());
+        config_changed = true;
     }
 
     if settings.embedding_provider.is_none() {

@@ -171,6 +171,10 @@ struct Cli {
     /// Show distance scores in output (lower is better)
     #[arg(long)]
     scores: bool,
+
+    /// Use turbopuffer native embeddings (skips Voyage API entirely)
+    #[arg(long)]
+    embeddings: bool,
 }
 
 #[tokio::main]
@@ -199,7 +203,7 @@ async fn main() {
         if let Err(e) = turbopuffer::delete_namespace(&namespace).await {
             vprintln!("<(°◯°)> Note: {}", e);
         }
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency)
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.embeddings)
             .await
             .unwrap();
     }
@@ -239,7 +243,7 @@ async fn main() {
             "No search query provided, syncing directory: {}",
             start_directory
         );
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency)
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.embeddings)
             .await
             .unwrap();
     } else if let Some(query) = query {
@@ -252,14 +256,16 @@ async fn main() {
             }
         });
 
-        tokio::spawn(async {
-            let voyage = embeddings::VoyageEmbedding::new();
-            for _i in 1..=5 {
-                if let Err(_e) = voyage.ping().await {
-                    break;
+        if !cli.embeddings {
+            tokio::spawn(async {
+                let voyage = embeddings::VoyageEmbedding::new();
+                for _i in 1..=5 {
+                    if let Err(_e) = voyage.ping().await {
+                        break;
+                    }
                 }
-            }
-        });
+            });
+        }
 
         if cli.reset {
             // no need to speculate, we know it's indexed
@@ -269,6 +275,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                cli.embeddings,
             )
             .await
             {
@@ -286,6 +293,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                cli.embeddings,
             )
             .await
             {
@@ -302,6 +310,7 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                cli.embeddings,
             )
             .await
             {

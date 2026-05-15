@@ -44,6 +44,7 @@ pub async fn tpuf_apply_diff(
     remote_chunks_to_delete: Vec<Chunk>,
     verbose: bool,
     embedding_concurrency: Option<usize>,
+    use_native_embeddings: bool,
 ) -> Result<bool> {
     if local_chunks_to_upload.is_empty() && remote_chunks_to_delete.is_empty() {
         vprintln!("<(°O°)> turbopuffer search index up-to-date");
@@ -77,36 +78,48 @@ pub async fn tpuf_apply_diff(
             }
         });
 
-        // Stream pipeline: chunks -> embed -> write
-        let embedding_provider = match embedding_concurrency {
-            Some(concurrency) => embeddings::VoyageEmbedding::with_concurrency(concurrency),
-            None => embeddings::VoyageEmbedding::new(),
-        };
-        let embedded_stream = embedding_provider
-            .embed_stream(chunk_stream, embeddings::EmbeddingType::Document);
-
-        // Filter out errors and collect successful chunks
-        let successful_chunks = embedded_stream.filter_map(|result| async move {
-            match result {
-                Ok(chunk) => Some(chunk),
-                Err(e) => {
-                    eprintln!("<(°!°)> Embedding error: {}", e);
+        if use_native_embeddings {
+            // Skip Voyage: turbopuffer embeds the content field natively
+            turbopuffer::write_chunks(
+                namespace,
+                chunk_stream,
+                if remote_chunks_to_delete.is_empty() {
                     None
-                }
-            }
-        });
+                } else {
+                    Some(remote_chunks_to_delete)
+                },
+            )
+            .await?;
+        } else {
+            // Stream pipeline: chunks -> Voyage embed -> write
+            let embedding_provider = match embedding_concurrency {
+                Some(concurrency) => embeddings::VoyageEmbedding::with_concurrency(concurrency),
+                None => embeddings::VoyageEmbedding::new(),
+            };
+            let embedded_stream = embedding_provider
+                .embed_stream(chunk_stream, embeddings::EmbeddingType::Document);
 
-        // Write all chunks with delete_chunks in the first batch
-        turbopuffer::write_chunks(
-            namespace,
-            successful_chunks,
-            if remote_chunks_to_delete.is_empty() {
-                None
-            } else {
-                Some(remote_chunks_to_delete)
-            },
-        )
-        .await?;
+            let successful_chunks = embedded_stream.filter_map(|result| async move {
+                match result {
+                    Ok(chunk) => Some(chunk),
+                    Err(e) => {
+                        eprintln!("<(°!°)> Embedding error: {}", e);
+                        None
+                    }
+                }
+            });
+
+            turbopuffer::write_chunks(
+                namespace,
+                successful_chunks,
+                if remote_chunks_to_delete.is_empty() {
+                    None
+                } else {
+                    Some(remote_chunks_to_delete)
+                },
+            )
+            .await?;
+        }
     } else if !remote_chunks_to_delete.is_empty() {
         // Only deletions, no uploads - use empty stream
         turbopuffer::write_chunks(namespace, stream::empty(), Some(remote_chunks_to_delete))
@@ -116,7 +129,7 @@ pub async fn tpuf_apply_diff(
     Ok(true) // Content changed
 }
 
-pub async fn tpuf_sync(directory: &str, embedding_concurrency: Option<usize>) -> Result<bool> {
+pub async fn tpuf_sync(directory: &str, embedding_concurrency: Option<usize>, use_native_embeddings: bool) -> Result<bool> {
     let (namespace, root_dir) = project::namespace_and_dir(directory)?;
     vprintln!("namespace={} dir={}", namespace, root_dir);
 
@@ -138,5 +151,5 @@ pub async fn tpuf_sync(directory: &str, embedding_concurrency: Option<usize>) ->
         tokio_rayon::spawn(move || tpuf_chunk_diff(local_chunks, remote_chunks)).await?;
 
     // Apply the diff
-    tpuf_apply_diff(&namespace, remote_upload, remote_delete, is_verbose(), embedding_concurrency).await
+    tpuf_apply_diff(&namespace, remote_upload, remote_delete, is_verbose(), embedding_concurrency, use_native_embeddings).await
 }
