@@ -92,6 +92,7 @@ pub async fn search(
     embedding_concurrency: Option<usize>,
     show_scores: bool,
     use_native_embeddings: bool,
+    model: &str,
 ) -> Result<String, SearchError> {
     let (namespace, root_dir) = project::namespace_and_dir(directory)
         .map_err(|e| SearchError::NamespaceError(e.to_string()))?;
@@ -102,7 +103,7 @@ pub async fn search(
 
     let rank_by = if use_native_embeddings {
         println!("{:#?}", query);
-        serde_json::json!(["content", "ANN", ["Embed", query, {"model": "voyage/voyage-code-3"}]])
+        serde_json::json!(["content", "ANN", ["Embed", query, {"model": model}]])
     } else {
         let query_chunk = chunker::Chunk {
             content: Some(query.to_string()),
@@ -164,11 +165,13 @@ pub async fn speculate_search(
     embedding_concurrency: Option<usize>,
     show_scores: bool,
     use_native_embeddings: bool,
+    model: &str,
 ) -> Result<String, SearchError> {
     loop {
         let mut search_task = tokio::spawn({
             let query = query.to_string();
             let directory = directory.to_string();
+            let model = model.to_string();
             async move {
                 search(
                     &query,
@@ -177,13 +180,15 @@ pub async fn speculate_search(
                     embedding_concurrency,
                     show_scores,
                     use_native_embeddings,
+                    &model,
                 )
                 .await
             }
         });
         let mut index_task = tokio::spawn({
             let directory = directory.to_string();
-            async move { sync::tpuf_sync(&directory, embedding_concurrency, use_native_embeddings).await }
+            let model = model.to_string();
+            async move { sync::tpuf_sync(&directory, embedding_concurrency, use_native_embeddings, &model).await }
         });
 
         tokio::select! {

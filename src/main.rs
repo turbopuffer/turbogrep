@@ -175,6 +175,10 @@ struct Cli {
     /// Use turbopuffer native embeddings (skips Voyage API entirely)
     #[arg(long)]
     embeddings: bool,
+
+    /// Embedding model name (default: voyage/voyage-code-3)
+    #[arg(long, default_value = "voyage/voyage-code-3")]
+    model: String,
 }
 
 #[tokio::main]
@@ -203,7 +207,7 @@ async fn main() {
         if let Err(e) = turbopuffer::delete_namespace(&namespace).await {
             vprintln!("<(°◯°)> Note: {}", e);
         }
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.embeddings)
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.embeddings, &cli.model)
             .await
             .unwrap();
     }
@@ -243,7 +247,7 @@ async fn main() {
             "No search query provided, syncing directory: {}",
             start_directory
         );
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.embeddings)
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.embeddings, &cli.model)
             .await
             .unwrap();
     } else if let Some(query) = query {
@@ -276,6 +280,7 @@ async fn main() {
                 cli.embedding_concurrency,
                 cli.scores,
                 cli.embeddings,
+                &cli.model,
             )
             .await
             {
@@ -294,6 +299,7 @@ async fn main() {
                 cli.embedding_concurrency,
                 cli.scores,
                 cli.embeddings,
+                &cli.model,
             )
             .await
             {
@@ -311,6 +317,7 @@ async fn main() {
                 cli.embedding_concurrency,
                 cli.scores,
                 cli.embeddings,
+                &cli.model,
             )
             .await
             {

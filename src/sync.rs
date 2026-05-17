@@ -45,6 +45,7 @@ pub async fn tpuf_apply_diff(
     verbose: bool,
     embedding_concurrency: Option<usize>,
     use_native_embeddings: bool,
+    model: &str,
 ) -> Result<bool> {
     if local_chunks_to_upload.is_empty() && remote_chunks_to_delete.is_empty() {
         vprintln!("<(°O°)> turbopuffer search index up-to-date");
@@ -88,6 +89,7 @@ pub async fn tpuf_apply_diff(
                 } else {
                     Some(remote_chunks_to_delete)
                 },
+                model,
             )
             .await?;
         } else {
@@ -117,19 +119,20 @@ pub async fn tpuf_apply_diff(
                 } else {
                     Some(remote_chunks_to_delete)
                 },
+                model,
             )
             .await?;
         }
     } else if !remote_chunks_to_delete.is_empty() {
         // Only deletions, no uploads - use empty stream
-        turbopuffer::write_chunks(namespace, stream::empty(), Some(remote_chunks_to_delete))
+        turbopuffer::write_chunks(namespace, stream::empty(), Some(remote_chunks_to_delete), model)
             .await?;
     }
 
     Ok(true) // Content changed
 }
 
-pub async fn tpuf_sync(directory: &str, embedding_concurrency: Option<usize>, use_native_embeddings: bool) -> Result<bool> {
+pub async fn tpuf_sync(directory: &str, embedding_concurrency: Option<usize>, use_native_embeddings: bool, model: &str) -> Result<bool> {
     let (namespace, root_dir) = project::namespace_and_dir(directory)?;
     vprintln!("namespace={} dir={}", namespace, root_dir);
 
@@ -151,5 +154,5 @@ pub async fn tpuf_sync(directory: &str, embedding_concurrency: Option<usize>, us
         tokio_rayon::spawn(move || tpuf_chunk_diff(local_chunks, remote_chunks)).await?;
 
     // Apply the diff
-    tpuf_apply_diff(&namespace, remote_upload, remote_delete, is_verbose(), embedding_concurrency, use_native_embeddings).await
+    tpuf_apply_diff(&namespace, remote_upload, remote_delete, is_verbose(), embedding_concurrency, use_native_embeddings, model).await
 }

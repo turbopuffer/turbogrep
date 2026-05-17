@@ -195,6 +195,7 @@ pub async fn write_chunks<S>(
     namespace: &str,
     chunks: S,
     delete_chunks: Option<Vec<Chunk>>,
+    model: &str,
 ) -> Result<(), TurbopufferError>
 where
     S: Stream<Item = Chunk> + Send + 'static,
@@ -206,6 +207,7 @@ where
         std::env::var("TURBOPUFFER_API_KEY").map_err(|_| TurbopufferError::MissingApiKey)?;
 
     let namespace = namespace.to_string();
+    let model = model.to_string();
     let mut is_first_batch = true;
     let _total_start = Instant::now();
     let mut _total_written = 0;
@@ -216,6 +218,7 @@ where
             .map(move |batch| {
                 let namespace = namespace.clone();
                 let api_key = api_key.clone();
+                let model = model.clone();
                 let delete_chunks = if is_first_batch {
                     is_first_batch = false;
                     delete_chunks.clone()
@@ -223,7 +226,7 @@ where
                     None
                 };
 
-                async move { write_batch(&namespace, batch, delete_chunks, &api_key).await }
+                async move { write_batch(&namespace, batch, delete_chunks, &api_key, model).await }
             })
             .buffer_unordered(CONCURRENT_REQUESTS),
     );
@@ -241,6 +244,7 @@ async fn write_batch(
     chunks: Vec<Chunk>,
     delete_chunks: Option<Vec<Chunk>>,
     api_key: &str,
+    model: String,
 ) -> Result<usize, TurbopufferError> {
     let _instant = Instant::now();
     let chunk_count = chunks.len();
@@ -274,7 +278,7 @@ async fn write_batch(
                     "filterable": false,
                     "full_text_search": true,
                     "embed": {
-                        "model": "voyage/voyage-code-3"
+                        "model": model
                     }
                 }
             }
