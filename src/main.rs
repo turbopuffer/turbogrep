@@ -179,6 +179,10 @@ struct Cli {
     /// Embedding model name (default: voyage/voyage-code-3)
     #[arg(long, default_value = "voyage/voyage-code-3")]
     model: String,
+
+    /// turbopuffer region to use (overrides config file)
+    #[arg(long)]
+    region: Option<String>,
 }
 
 #[tokio::main]
@@ -186,7 +190,7 @@ async fn main() {
     let cli = Cli::parse();
     turbogrep::set_verbose(cli.verbose);
 
-    if let Err(e) = config::load_or_init_settings().await {
+    if let Err(e) = config::load_or_init_settings(cli.region.as_deref()).await {
         eprintln!("<(°!°)> Error loading settings: {e}");
         return;
     }
