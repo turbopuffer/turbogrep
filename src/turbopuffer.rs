@@ -154,6 +154,7 @@ struct ChunkForUpload {
     file_ctime: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
+    repo: String,
 }
 
 impl From<Chunk> for ChunkForUpload {
@@ -187,6 +188,7 @@ impl From<Chunk> for ChunkForUpload {
             file_mtime: chunk.file_mtime,
             file_ctime: chunk.file_ctime,
             content: chunk.content,
+            repo: chunk.repo,
         }
     }
 }
@@ -200,8 +202,8 @@ pub async fn write_chunks<S>(
 where
     S: Stream<Item = Chunk> + Send + 'static,
 {
-    const BATCH_SIZE: usize = 30;
-    const CONCURRENT_REQUESTS: usize = 4; // Reduced to prevent HTTP client exhaustion
+    const BATCH_SIZE: usize = 2;
+    const CONCURRENT_REQUESTS: usize = 1; // Reduced to prevent HTTP client exhaustion
 
     let api_key =
         std::env::var("TURBOPUFFER_API_KEY").map_err(|_| TurbopufferError::MissingApiKey)?;
@@ -226,14 +228,21 @@ where
                     None
                 };
 
+                let batch_bytes: usize = batch.iter()
+                    .map(|c| c.content.as_ref().map_or(0, |s| s.len()))
+                    .sum();
+                crate::vprintln!("writing batch of {} chunks ({} bytes)", batch.len(), batch_bytes);
+
                 async move { write_batch(&namespace, batch, delete_chunks, &api_key, model).await }
             })
             .buffer_unordered(CONCURRENT_REQUESTS),
     );
 
     while let Some(result) = chunk_stream.next().await {
-        let batch_count = result?;
-        _total_written += batch_count;
+        match result {
+            Ok(batch_count) => _total_written += batch_count,
+            Err(e) => eprintln!("<(°!°)> batch write error: {}", e),
+        }
     }
 
     Ok(())
@@ -273,10 +282,21 @@ async fn write_batch(
             "schema": {
                 "file_hash": "uint",
                 "chunk_hash": "uint",
+                "path": {
+                    "type": "string",
+                    "glob": true,
+                    "filterable": true
+                },
+                "repo": {
+                    "type": "string",
+                    "glob": true,
+                    "filterable": true
+                },
                 "content": {
                     "type": "string",
                     "filterable": false,
                     "full_text_search": true,
+                    "regex": true,
                     "embed": {
                         "model": model
                     }
@@ -364,7 +384,7 @@ pub async fn delete_namespace(namespace: &str) -> Result<(), TurbopufferError> {
 
 pub async fn query_chunks(
     namespace: &str,
-    rank_by: serde_json::Value,
+    rank_by: Option<serde_json::Value>,
     top_k: u32,
     filters: Option<serde_json::Value>,
 ) -> Result<Vec<Chunk>, TurbopufferError> {
@@ -375,11 +395,14 @@ pub async fn query_chunks(
     let _instant = Instant::now();
 
     let mut request = serde_json::json!({
-        "rank_by": rank_by,
         "top_k": top_k,
         "exclude_attributes": ["vector"],
         "consistency": { "level": "eventual" },
     });
+
+    if let Some(rank_by) = rank_by {
+        request["rank_by"] = rank_by;
+    }
 
     if let Some(filters) = filters {
         request["filters"] = filters;
@@ -421,7 +444,7 @@ pub async fn all_chunks(namespace: &str) -> Result<Vec<Chunk>, TurbopufferError>
     loop {
         let batch = query_chunks(
             namespace,
-            serde_json::json!(["id", "asc"]),
+            Some(serde_json::json!(["id", "asc"])),
             1200,
             if last_id > 0 {
                 Some(serde_json::json!(["id", "Gt", last_id]))
