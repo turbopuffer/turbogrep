@@ -191,6 +191,12 @@ pub struct Chunk {
     // Distance score from similarity search (lower is better, None if not from search)
     #[serde(rename = "$dist")]
     pub distance: Option<f64>,
+    // Sparse vector {symbol: 1.0} identifying the SCIP symbol this chunk defines
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definitions: Option<std::collections::HashMap<String, f32>>,
+    // Sparse vector {symbol: 1.0, ...} of every other function symbol referenced in this chunk
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references: Option<std::collections::HashMap<String, f32>>,
 }
 
 struct FiletypeMatcher {
@@ -461,6 +467,8 @@ pub fn chunk(
                 content: Some(function_with_comments.to_string()),
                 repo: String::new(),
                 distance: None, // Not from search, so no distance score
+                definitions: None,
+                references: None,
             });
         }
     }
@@ -1008,6 +1016,8 @@ fn chunk_plain_text(content: &str, file_path: &Path, metadata: fs::Metadata) -> 
         content: Some(content.to_string()),
         repo: String::new(),
         distance: None,
+        definitions: None,
+        references: None,
     }]
 }
 
@@ -1230,6 +1240,8 @@ pub fn hash_chunk_files(root_dir: &str) -> Result<Vec<Chunk>> {
                     content: None,  // No content for hash chunks
                     repo: String::new(),
                     distance: None, // Not from search, so no distance score
+                    definitions: None,
+                    references: None,
                 };
 
                 Some(vec![chunk])

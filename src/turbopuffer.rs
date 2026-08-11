@@ -7,7 +7,7 @@ use futures::stream::{Stream, StreamExt};
 use itertools::Itertools;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -155,6 +155,10 @@ struct ChunkForUpload {
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     repo: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    definitions: Option<HashMap<String, f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    references: Option<HashMap<String, f32>>,
 }
 
 impl From<Chunk> for ChunkForUpload {
@@ -189,6 +193,8 @@ impl From<Chunk> for ChunkForUpload {
             file_ctime: chunk.file_ctime,
             content: chunk.content,
             repo: chunk.repo,
+            definitions: chunk.definitions,
+            references: chunk.references,
         }
     }
 }
@@ -197,7 +203,7 @@ pub async fn write_chunks<S>(
     namespace: &str,
     chunks: S,
     delete_chunks: Option<Vec<Chunk>>,
-    model: &str,
+    model: Option<&str>,
 ) -> Result<(), TurbopufferError>
 where
     S: Stream<Item = Chunk> + Send + 'static,
@@ -209,7 +215,7 @@ where
         std::env::var("TURBOPUFFER_API_KEY").map_err(|_| TurbopufferError::MissingApiKey)?;
 
     let namespace = namespace.to_string();
-    let model = model.to_string();
+    let model = model.map(|m| m.to_string());
     let mut is_first_batch = true;
     let _total_start = Instant::now();
     let mut _total_written = 0;
@@ -253,7 +259,7 @@ async fn write_batch(
     chunks: Vec<Chunk>,
     delete_chunks: Option<Vec<Chunk>>,
     api_key: &str,
-    model: String,
+    model: Option<String>,
 ) -> Result<usize, TurbopufferError> {
     let _instant = Instant::now();
     let chunk_count = chunks.len();
@@ -276,9 +282,20 @@ async fn write_batch(
             .map(ChunkForUpload::from)
             .collect();
 
+        let has_model = model.is_some();
+
+        let mut content_schema = serde_json::json!({
+            "type": "string",
+            "filterable": false,
+            "full_text_search": true,
+            "regex": true
+        });
+        if let Some(model) = model {
+            content_schema["embed"] = serde_json::json!({ "model": model });
+        }
+
         let mut request_body = serde_json::json!({
             "upsert_rows": chunks_for_upload,
-            "distance_metric": "cosine_distance",
             "schema": {
                 "file_hash": "uint",
                 "chunk_hash": "uint",
@@ -292,17 +309,25 @@ async fn write_batch(
                     "glob": true,
                     "filterable": true
                 },
-                "content": {
-                    "type": "string",
-                    "filterable": false,
-                    "full_text_search": true,
-                    "regex": true,
-                    "embed": {
-                        "model": model
+                "content": content_schema,
+                "definitions": {
+                    "type": "{}f16",
+                    "sparse_knn": {
+                        "distance_metric": "dot_product"
+                    }
+                },
+                "references": {
+                    "type": "{}f16",
+                    "sparse_knn": {
+                        "distance_metric": "dot_product"
                     }
                 }
             }
         });
+
+        if has_model {
+            request_body["distance_metric"] = serde_json::json!("cosine_distance");
+        }
 
         if let Some(delete_chunks) = delete_chunks {
             if !delete_chunks.is_empty() {

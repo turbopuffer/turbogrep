@@ -168,7 +168,7 @@ pub async fn tpuf_apply_diff(
                 } else {
                     Some(remote_chunks_to_delete)
                 },
-                model,
+                Some(model),
             )
             .await?;
         } else {
@@ -198,7 +198,7 @@ pub async fn tpuf_apply_diff(
                 } else {
                     Some(remote_chunks_to_delete)
                 },
-                model,
+                Some(model),
             )
             .await?;
         }
@@ -206,7 +206,7 @@ pub async fn tpuf_apply_diff(
         stats.print();
     } else if !remote_chunks_to_delete.is_empty() {
         // Only deletions, no uploads - use empty stream
-        turbopuffer::write_chunks(namespace, stream::empty(), Some(remote_chunks_to_delete), model)
+        turbopuffer::write_chunks(namespace, stream::empty(), Some(remote_chunks_to_delete), Some(model))
             .await?;
     }
 

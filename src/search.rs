@@ -324,6 +324,7 @@ mod tests {
             file_ctime: 1000,
             content: Some("fn main() {\n    println!(\"Hello!\");\n}".to_string()),
             distance: None,
+            ..Default::default()
         }];
 
         let result = chunks_to_ripgrep_format(chunks, "/project", false);
