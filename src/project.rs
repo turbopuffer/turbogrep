@@ -16,7 +16,12 @@ pub fn validate_directory(path: &str) -> Result<PathBuf, String> {
 }
 
 pub fn find_project_root(start_path: &str) -> Result<std::path::PathBuf> {
-    let mut current = std::path::Path::new(start_path).canonicalize()?;
+    let start = std::path::Path::new(start_path).canonicalize()?;
+    let mut current = start.clone();
+
+    let home_dir = std::env::var("HOME")
+        .ok()
+        .and_then(|h| std::path::PathBuf::from(h).canonicalize().ok());
 
     loop {
         // Check for project root indicators (ordered by priority)
@@ -93,13 +98,19 @@ pub fn find_project_root(start_path: &str) -> Result<std::path::PathBuf> {
         }
 
         match current.parent() {
-            Some(parent) => current = parent.to_path_buf(),
+            Some(parent) => {
+                // Never walk into or above the home directory
+                if home_dir.as_ref().map_or(false, |h| parent == h.as_path()) {
+                    break;
+                }
+                current = parent.to_path_buf();
+            }
             None => break, // Reached filesystem root
         }
     }
 
     // If no project root found, return the original canonicalized path
-    Ok(std::path::Path::new(start_path).canonicalize()?)
+    Ok(start)
 }
 
 pub fn namespace_and_dir(directory: &str) -> Result<(String, String)> {

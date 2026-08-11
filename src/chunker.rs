@@ -186,9 +186,17 @@ pub struct Chunk {
     pub file_ctime: u64, // File creation time (Unix timestamp)
     // Content is kept locally but not stored on server for privacy
     pub content: Option<String>,
+    #[serde(default)]
+    pub repo: String,
     // Distance score from similarity search (lower is better, None if not from search)
     #[serde(rename = "$dist")]
     pub distance: Option<f64>,
+    // Sparse vector {symbol: 1.0} identifying the SCIP symbol this chunk defines
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definitions: Option<std::collections::HashMap<String, f32>>,
+    // Sparse vector {symbol: 1.0, ...} of every other function symbol referenced in this chunk
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references: Option<std::collections::HashMap<String, f32>>,
 }
 
 struct FiletypeMatcher {
@@ -457,7 +465,10 @@ pub fn chunk(
                 // TODO: chunk() could take ownership of the file str and probably just trim that
                 // string to this, to avoid a second allocation.
                 content: Some(function_with_comments.to_string()),
+                repo: String::new(),
                 distance: None, // Not from search, so no distance score
+                definitions: None,
+                references: None,
             });
         }
     }
@@ -955,6 +966,61 @@ pub struct ChunkFileResult {
     pub file_size: u64,
 }
 
+fn is_plain_text_extension(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("json" | "yaml" | "yml" | "toml" | "txt" | "lock")
+    )
+}
+
+fn chunk_plain_text(content: &str, file_path: &Path, metadata: fs::Metadata) -> Vec<Chunk> {
+    let file_hash = xxh3_64(content.as_bytes());
+    let path_str = file_path.to_string_lossy();
+    let end_line = content.lines().count() as u32;
+
+    let file_mtime = metadata
+        .modified()
+        .unwrap_or(std::time::UNIX_EPOCH)
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let file_ctime = metadata
+        .created()
+        .unwrap_or(std::time::UNIX_EPOCH)
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let id = {
+        let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+        hasher.update(path_str.as_bytes());
+        hasher.update(b":1:");
+        hasher.update(&end_line.to_le_bytes());
+        hasher.update(b":");
+        hasher.update(&file_hash.to_le_bytes());
+        hasher.update(b":");
+        hasher.update(&file_hash.to_le_bytes());
+        hasher.digest()
+    };
+
+    vec![Chunk {
+        id,
+        vector: None,
+        path: path_str.to_string(),
+        start_line: 1,
+        end_line,
+        file_hash,
+        chunk_hash: file_hash,
+        file_mtime,
+        file_ctime,
+        content: Some(content.to_string()),
+        repo: String::new(),
+        distance: None,
+        definitions: None,
+        references: None,
+    }]
+}
+
 pub fn chunk_file(path: &Path) -> Result<ChunkFileResult> {
     // Fast path: check file size first to skip empty/huge files
     let metadata = fs::metadata(path)?;
@@ -1001,6 +1067,17 @@ pub fn chunk_file(path: &Path) -> Result<ChunkFileResult> {
         } // Skip binary files
     };
     let utf_time = utf_instant.elapsed();
+
+    // Plain text formats: index whole file as a single chunk
+    if is_plain_text_extension(path) {
+        return Ok(ChunkFileResult {
+            chunks: chunk_plain_text(content_str, path, metadata),
+            read_time_ms: read_time.as_millis(),
+            utf_time_ms: utf_time.as_millis(),
+            parse_time_ms: 0,
+            file_size,
+        });
+    }
 
     // Time parsing
     let parse_instant = Instant::now();
@@ -1065,7 +1142,7 @@ where
                         }
 
                         // Pre-filter by supported file types
-                        if filetype_matcher.detect_language(path).is_some() {
+                        if filetype_matcher.detect_language(path).is_some() || is_plain_text_extension(path) {
                             if let Some(chunks) = processor(path) {
                                 if !chunks.is_empty() {
                                     all_chunks.lock().unwrap().extend(chunks);
@@ -1092,7 +1169,12 @@ where
 }
 
 pub fn chunk_files(root_dir: &str) -> Result<Vec<Chunk>> {
-    parallel_walk_files(root_dir, true, |path| match chunk_file(path) {
+    let repo = Path::new(root_dir)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let mut chunks = parallel_walk_files(root_dir, true, |path| match chunk_file(path) {
         Ok(result) => {
             if !result.chunks.is_empty() {
                 Some(result.chunks)
@@ -1104,13 +1186,24 @@ pub fn chunk_files(root_dir: &str) -> Result<Vec<Chunk>> {
             eprintln!("Error processing {}: {}", path.display(), e);
             None
         }
-    })
+    })?;
+
+    for chunk in &mut chunks {
+        chunk.repo = repo.clone();
+    }
+
+    Ok(chunks)
 }
 
 /// Create chunks with metadata only (no content) for efficient diffing
 /// This is much faster than full chunking since we don't need to parse content
 pub fn hash_chunk_files(root_dir: &str) -> Result<Vec<Chunk>> {
-    parallel_walk_files(root_dir, false, |path| {
+    let repo = Path::new(root_dir)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let mut chunks = parallel_walk_files(root_dir, false, |path| {
         // Get file content to calculate hash
         match fs::read(path) {
             Ok(content) => {
@@ -1145,7 +1238,10 @@ pub fn hash_chunk_files(root_dir: &str) -> Result<Vec<Chunk>> {
                     file_mtime,
                     file_ctime,
                     content: None,  // No content for hash chunks
+                    repo: String::new(),
                     distance: None, // Not from search, so no distance score
+                    definitions: None,
+                    references: None,
                 };
 
                 Some(vec![chunk])
@@ -1155,5 +1251,11 @@ pub fn hash_chunk_files(root_dir: &str) -> Result<Vec<Chunk>> {
                 None
             }
         }
-    })
+    })?;
+
+    for chunk in &mut chunks {
+        chunk.repo = repo.clone();
+    }
+
+    Ok(chunks)
 }

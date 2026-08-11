@@ -7,7 +7,7 @@ use futures::stream::{Stream, StreamExt};
 use itertools::Itertools;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -152,6 +152,13 @@ struct ChunkForUpload {
     chunk_hash: u64,
     file_mtime: u64,
     file_ctime: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    repo: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    definitions: Option<HashMap<String, f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    references: Option<HashMap<String, f32>>,
 }
 
 impl From<Chunk> for ChunkForUpload {
@@ -184,6 +191,10 @@ impl From<Chunk> for ChunkForUpload {
             chunk_hash: chunk.chunk_hash,
             file_mtime: chunk.file_mtime,
             file_ctime: chunk.file_ctime,
+            content: chunk.content,
+            repo: chunk.repo,
+            definitions: chunk.definitions,
+            references: chunk.references,
         }
     }
 }
@@ -192,17 +203,19 @@ pub async fn write_chunks<S>(
     namespace: &str,
     chunks: S,
     delete_chunks: Option<Vec<Chunk>>,
+    model: Option<&str>,
 ) -> Result<(), TurbopufferError>
 where
     S: Stream<Item = Chunk> + Send + 'static,
 {
-    const BATCH_SIZE: usize = 1000;
-    const CONCURRENT_REQUESTS: usize = 4; // Reduced to prevent HTTP client exhaustion
+    const BATCH_SIZE: usize = 2;
+    const CONCURRENT_REQUESTS: usize = 1; // Reduced to prevent HTTP client exhaustion
 
     let api_key =
         std::env::var("TURBOPUFFER_API_KEY").map_err(|_| TurbopufferError::MissingApiKey)?;
 
     let namespace = namespace.to_string();
+    let model = model.map(|m| m.to_string());
     let mut is_first_batch = true;
     let _total_start = Instant::now();
     let mut _total_written = 0;
@@ -213,6 +226,7 @@ where
             .map(move |batch| {
                 let namespace = namespace.clone();
                 let api_key = api_key.clone();
+                let model = model.clone();
                 let delete_chunks = if is_first_batch {
                     is_first_batch = false;
                     delete_chunks.clone()
@@ -220,14 +234,21 @@ where
                     None
                 };
 
-                async move { write_batch(&namespace, batch, delete_chunks, &api_key).await }
+                let batch_bytes: usize = batch.iter()
+                    .map(|c| c.content.as_ref().map_or(0, |s| s.len()))
+                    .sum();
+                crate::vprintln!("writing batch of {} chunks ({} bytes)", batch.len(), batch_bytes);
+
+                async move { write_batch(&namespace, batch, delete_chunks, &api_key, model).await }
             })
             .buffer_unordered(CONCURRENT_REQUESTS),
     );
 
     while let Some(result) = chunk_stream.next().await {
-        let batch_count = result?;
-        _total_written += batch_count;
+        match result {
+            Ok(batch_count) => _total_written += batch_count,
+            Err(e) => eprintln!("<(°!°)> batch write error: {}", e),
+        }
     }
 
     Ok(())
@@ -238,6 +259,7 @@ async fn write_batch(
     chunks: Vec<Chunk>,
     delete_chunks: Option<Vec<Chunk>>,
     api_key: &str,
+    model: Option<String>,
 ) -> Result<usize, TurbopufferError> {
     let _instant = Instant::now();
     let chunk_count = chunks.len();
@@ -260,14 +282,52 @@ async fn write_batch(
             .map(ChunkForUpload::from)
             .collect();
 
+        let has_model = model.is_some();
+
+        let mut content_schema = serde_json::json!({
+            "type": "string",
+            "filterable": false,
+            "full_text_search": true,
+            "regex": true
+        });
+        if let Some(model) = model {
+            content_schema["embed"] = serde_json::json!({ "model": model });
+        }
+
         let mut request_body = serde_json::json!({
             "upsert_rows": chunks_for_upload,
-            "distance_metric": "cosine_distance",
             "schema": {
                 "file_hash": "uint",
-                "chunk_hash": "uint"
+                "chunk_hash": "uint",
+                "path": {
+                    "type": "string",
+                    "glob": true,
+                    "filterable": true
+                },
+                "repo": {
+                    "type": "string",
+                    "glob": true,
+                    "filterable": true
+                },
+                "content": content_schema,
+                "definitions": {
+                    "type": "{}f16",
+                    "sparse_knn": {
+                        "distance_metric": "dot_product"
+                    }
+                },
+                "references": {
+                    "type": "{}f16",
+                    "sparse_knn": {
+                        "distance_metric": "dot_product"
+                    }
+                }
             }
         });
+
+        if has_model {
+            request_body["distance_metric"] = serde_json::json!("cosine_distance");
+        }
 
         if let Some(delete_chunks) = delete_chunks {
             if !delete_chunks.is_empty() {
@@ -349,7 +409,7 @@ pub async fn delete_namespace(namespace: &str) -> Result<(), TurbopufferError> {
 
 pub async fn query_chunks(
     namespace: &str,
-    rank_by: serde_json::Value,
+    rank_by: Option<serde_json::Value>,
     top_k: u32,
     filters: Option<serde_json::Value>,
 ) -> Result<Vec<Chunk>, TurbopufferError> {
@@ -360,11 +420,14 @@ pub async fn query_chunks(
     let _instant = Instant::now();
 
     let mut request = serde_json::json!({
-        "rank_by": rank_by,
         "top_k": top_k,
         "exclude_attributes": ["vector"],
         "consistency": { "level": "eventual" },
     });
+
+    if let Some(rank_by) = rank_by {
+        request["rank_by"] = rank_by;
+    }
 
     if let Some(filters) = filters {
         request["filters"] = filters;
@@ -406,7 +469,7 @@ pub async fn all_chunks(namespace: &str) -> Result<Vec<Chunk>, TurbopufferError>
     loop {
         let batch = query_chunks(
             namespace,
-            serde_json::json!(["id", "asc"]),
+            Some(serde_json::json!(["id", "asc"])),
             1200,
             if last_id > 0 {
                 Some(serde_json::json!(["id", "Gt", last_id]))

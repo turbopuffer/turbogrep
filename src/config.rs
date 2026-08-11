@@ -36,7 +36,7 @@ fn get_config_dir() -> Result<PathBuf> {
     }
 }
 
-pub async fn load_or_init_settings() -> Result<()> {
+pub async fn load_or_init_settings(region_override: Option<&str>) -> Result<()> {
     let path = config_path()?;
     let mut settings = if path.exists() {
         let content = fs::read_to_string(&path)?;
@@ -45,20 +45,13 @@ pub async fn load_or_init_settings() -> Result<()> {
         Settings::default()
     };
 
-
     let mut config_changed = false;
 
-    if settings.turbopuffer_region.is_none() {
-        match crate::turbopuffer::find_closest_region().await {
-            Ok(best_region) => {
-                settings.turbopuffer_region = Some(best_region);
-                config_changed = true;
-            }
-            Err(_e) => {
-                settings.turbopuffer_region = Some("gcp-us-east4".to_string());
-                config_changed = true;
-            }
-        }
+    if let Some(region) = region_override {
+        settings.turbopuffer_region = Some(region.to_string());
+    } else if settings.turbopuffer_region.is_none() {
+        settings.turbopuffer_region = Some("gcp-europe-west3".to_string());
+        config_changed = true;
     }
 
     if settings.embedding_provider.is_none() {

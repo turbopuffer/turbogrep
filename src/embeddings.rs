@@ -244,7 +244,7 @@ impl VoyageEmbedding {
                 .header("Authorization", format!("Bearer {api_key}"))
                 .json(&serde_json::json!({
                     "input": texts,
-                    "model": "voyage-code-3",
+                    "model": "voyage/voyage-code-3",
                     "input_type": embedding_type.as_str(),
                     "output_dtype": "float",
                     "encoding_format": "base64"

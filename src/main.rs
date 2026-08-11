@@ -11,6 +11,7 @@ mod chunker;
 mod embeddings;
 mod progress;
 mod project;
+mod scip;
 mod search;
 mod sync;
 mod turbopuffer;
@@ -171,6 +172,38 @@ struct Cli {
     /// Show distance scores in output (lower is better)
     #[arg(long)]
     scores: bool,
+
+    /// Use turbopuffer native embeddings (skips Voyage API entirely)
+    #[arg(long)]
+    embeddings: bool,
+
+    /// Search index using a regex pattern instead of semantic search
+    #[arg(long)]
+    regex: bool,
+
+    /// Embedding model name (default: voyage/voyage-code-3)
+    #[arg(long, default_value = "voyage/voyage-code-3")]
+    model: String,
+
+    /// turbopuffer region to use (overrides config file)
+    #[arg(long)]
+    region: Option<String>,
+
+    /// Custom namespace name (overrides auto-derived name from directory path)
+    #[arg(long)]
+    name: Option<String>,
+
+    /// Print each chunk as it is indexed (path, line range, and content)
+    #[arg(long)]
+    debug_chunks: bool,
+
+    /// Add chunks to namespace without deleting stale ones (for multi-repo namespaces)
+    #[arg(long)]
+    multi: bool,
+
+    /// Generate a SCIP index for the target TypeScript project and exit
+    #[arg(long)]
+    scip: bool,
 }
 
 #[tokio::main]
@@ -178,7 +211,7 @@ async fn main() {
     let cli = Cli::parse();
     turbogrep::set_verbose(cli.verbose);
 
-    if let Err(e) = config::load_or_init_settings().await {
+    if let Err(e) = config::load_or_init_settings(cli.region.as_deref()).await {
         eprintln!("<(°!°)> Error loading settings: {e}");
         return;
     }
@@ -192,14 +225,77 @@ async fn main() {
         }
     };
 
+    // Generate a SCIP index, enrich the matching function chunks with definitions/references
+    // sparse vectors, and upsert them into the same namespace as regular indexing, then exit.
+    if cli.scip {
+        let (derived_namespace, root_dir) = namespace_and_dir(&start_directory).unwrap();
+        let namespace = cli.name.clone().unwrap_or(derived_namespace);
+
+        vprintln!(
+            "<(°○°)> Note: --scip upserts sparse-only rows and will clear the dense vector \
+             on any chunk that was already embedded by a regular `tg` run, until the next sync."
+        );
+
+        let scip::ScipIndexResult { chunks, unmatched } = match scip::index(Path::new(&root_dir)) {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("<(°!°)> Failed to build SCIP index: {e}");
+                std::process::exit(1);
+            }
+        };
+
+        if unmatched > 0 {
+            println!(
+                "<(°◯°)> {} function chunk{} could not be matched to a SCIP symbol (rerun with -v for details)",
+                unmatched,
+                if unmatched == 1 { "" } else { "s" }
+            );
+        }
+
+        if chunks.is_empty() {
+            println!("<(°◯°)> No function chunks could be matched to SCIP symbols");
+            return;
+        }
+
+        if cli.debug_chunks {
+            for chunk in &chunks {
+                eprintln!("{}:{}-{}", chunk.path, chunk.start_line, chunk.end_line);
+                if let Some(definitions) = &chunk.definitions {
+                    eprintln!("  definitions: {:?}", definitions);
+                }
+                if let Some(references) = &chunk.references {
+                    eprintln!("  references:  {:?}", references);
+                }
+            }
+        }
+
+        let chunk_count = chunks.len();
+        if let Err(e) =
+            turbopuffer::write_chunks(&namespace, futures::stream::iter(chunks), None, None).await
+        {
+            eprintln!("<(°!°)> Failed to write SCIP chunks: {e}");
+            std::process::exit(1);
+        }
+
+        println!(
+            "<(°◕°)> Wrote {} SCIP-enriched chunks to namespace {}",
+            chunk_count, namespace
+        );
+        return;
+    }
+
     // If reset flag is provided, delete the namespace first
     if cli.reset {
-        let (namespace, _root_dir) = namespace_and_dir(&start_directory).unwrap();
+        let namespace = if let Some(ref name) = cli.name {
+            name.clone()
+        } else {
+            namespace_and_dir(&start_directory).unwrap().0
+        };
         vprintln!("<(°○°)> Resetting namespace: {}", namespace);
         if let Err(e) = turbopuffer::delete_namespace(&namespace).await {
             vprintln!("<(°◯°)> Note: {}", e);
         }
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency)
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.embeddings, &cli.model, cli.name.as_deref(), cli.debug_chunks, cli.multi)
             .await
             .unwrap();
     }
@@ -232,14 +328,26 @@ async fn main() {
     if cli.chunk_only {
         // Only run the chunking step for performance testing
         let (_, root_dir) = namespace_and_dir(&start_directory).unwrap();
-        chunker::chunk_files(&root_dir).unwrap();
+        let chunks = chunker::chunk_files(&root_dir).unwrap();
+        if cli.debug_chunks {
+            for chunk in &chunks {
+                eprintln!(
+                    "{}:{}-{}",
+                    chunk.path, chunk.start_line, chunk.end_line
+                );
+                if let Some(content) = &chunk.content {
+                    eprintln!("{}", content);
+                }
+                eprintln!();
+            }
+        };
     } else if query.is_none() || cli.no_search {
         // No query provided, just sync the directory
         vprintln!(
             "No search query provided, syncing directory: {}",
             start_directory
         );
-        sync::tpuf_sync(&start_directory, cli.embedding_concurrency)
+        sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.embeddings, &cli.model, cli.name.as_deref(), cli.debug_chunks, cli.multi)
             .await
             .unwrap();
     } else if let Some(query) = query {
@@ -252,16 +360,32 @@ async fn main() {
             }
         });
 
-        tokio::spawn(async {
-            let voyage = embeddings::VoyageEmbedding::new();
-            for _i in 1..=5 {
-                if let Err(_e) = voyage.ping().await {
-                    break;
+        if !cli.embeddings {
+            tokio::spawn(async {
+                let voyage = embeddings::VoyageEmbedding::new();
+                for _i in 1..=5 {
+                    if let Err(_e) = voyage.ping().await {
+                        break;
+                    }
+                }
+            });
+        }
+
+        if cli.regex {
+            if !cli.no_sync && !cli.reset {
+                if let Err(e) = sync::tpuf_sync(&start_directory, cli.embedding_concurrency, cli.embeddings, &cli.model, cli.name.as_deref(), cli.debug_chunks, cli.multi).await {
+                    eprintln!("<(°!°)> Sync failed: {e}");
+                    std::process::exit(1);
                 }
             }
-        });
-
-        if cli.reset {
+            match search::search_regex(&query, &start_directory, cli.max_count, cli.scores, cli.name.as_deref()).await {
+                Ok(results) => println!("{results}"),
+                Err(e) => {
+                    eprintln!("<(°!°)> Regex search failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else if cli.reset {
             // no need to speculate, we know it's indexed
             match search::search(
                 &query,
@@ -269,6 +393,9 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                cli.embeddings,
+                &cli.model,
+                cli.name.as_deref(),
             )
             .await
             {
@@ -286,6 +413,9 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                cli.embeddings,
+                &cli.model,
+                cli.name.as_deref(),
             )
             .await
             {
@@ -302,6 +432,10 @@ async fn main() {
                 cli.max_count,
                 cli.embedding_concurrency,
                 cli.scores,
+                cli.embeddings,
+                &cli.model,
+                cli.name.as_deref(),
+                cli.multi,
             )
             .await
             {

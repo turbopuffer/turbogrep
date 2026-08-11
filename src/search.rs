@@ -91,43 +91,51 @@ pub async fn search(
     max_count: usize,
     embedding_concurrency: Option<usize>,
     show_scores: bool,
+    use_native_embeddings: bool,
+    model: &str,
+    namespace_override: Option<&str>,
 ) -> Result<String, SearchError> {
-    let (namespace, root_dir) = project::namespace_and_dir(directory)
+    let (derived_namespace, root_dir) = project::namespace_and_dir(directory)
         .map_err(|e| SearchError::NamespaceError(e.to_string()))?;
+    let namespace = namespace_override.map(|s| s.to_string()).unwrap_or(derived_namespace);
 
     if query.trim().is_empty() {
         return Err(SearchError::EmptyQuery);
     }
 
-    let prompt = query.to_string();
+    let rank_by = if use_native_embeddings {
+        println!("{:#?}", query);
+        serde_json::json!(["content", "ANN", ["Embed", query, {"model": model}]])
+    } else {
+        let query_chunk = chunker::Chunk {
+            content: Some(query.to_string()),
+            ..Default::default()
+        };
 
-    let query_chunk = chunker::Chunk {
-        content: Some(prompt),
-        ..Default::default()
+        let instant = std::time::Instant::now();
+        let embedding_provider = match embedding_concurrency {
+            Some(concurrency) => embeddings::VoyageEmbedding::with_concurrency(concurrency),
+            None => embeddings::VoyageEmbedding::new(),
+        };
+        let embed_result = embedding_provider
+            .embed(vec![query_chunk], embeddings::EmbeddingType::Query)
+            .await?;
+        vprintln!("embedding w/ voyage took: {:.2?}", instant.elapsed());
+
+        let query_vector = embed_result
+            .chunks
+            .first()
+            .and_then(|chunk| chunk.vector.as_ref())
+            .ok_or(SearchError::NoEmbedding)?
+            .clone();
+
+        serde_json::json!(["vector", "ANN", query_vector])
     };
 
     let instant = std::time::Instant::now();
-    let embedding_provider = match embedding_concurrency {
-        Some(concurrency) => embeddings::VoyageEmbedding::with_concurrency(concurrency),
-        None => embeddings::VoyageEmbedding::new(),
-    };
-    let embed_result = embedding_provider
-        .embed(vec![query_chunk], embeddings::EmbeddingType::Query)
-        .await?;
-    vprintln!("embedding w/ voyage took: {:.2?}", instant.elapsed());
-
-    let query_vector = embed_result
-        .chunks
-        .first()
-        .and_then(|chunk| chunk.vector.as_ref())
-        .ok_or(SearchError::NoEmbedding)?
-        .clone();
-
-    let instant = std::time::Instant::now();
-    // Search turbopuffer using existing query_chunks
     let results = turbopuffer::query_chunks(
         &namespace,
-        serde_json::json!(["vector", "ANN", query_vector]),
+        Some(rank_by),
         max_count as u32,
         None,
     )
@@ -149,6 +157,39 @@ pub async fn search(
     ))
 }
 
+pub async fn search_regex(
+    pattern: &str,
+    directory: &str,
+    max_count: usize,
+    show_scores: bool,
+    namespace_override: Option<&str>,
+) -> Result<String, SearchError> {
+    let (derived_namespace, root_dir) = project::namespace_and_dir(directory)
+        .map_err(|e| SearchError::NamespaceError(e.to_string()))?;
+    let namespace = namespace_override.map(|s| s.to_string()).unwrap_or(derived_namespace);
+
+    if pattern.trim().is_empty() {
+        return Err(SearchError::EmptyQuery);
+    }
+
+    let instant = std::time::Instant::now();
+    let results = turbopuffer::query_chunks(
+        &namespace,
+        None,
+        max_count as u32,
+        Some(serde_json::json!(["content", "Regex", pattern])),
+    )
+    .await?;
+    vprintln!("tpuf regex search took: {:.2?}", instant.elapsed());
+
+    let mut results_with_content = results;
+    for chunk in &mut results_with_content {
+        if let Err(_e) = load_chunk_content(chunk) {}
+    }
+
+    Ok(chunks_to_ripgrep_format(results_with_content, &root_dir, show_scores))
+}
+
 /// Implements a speculative search pattern that races a search against an index sync.
 /// This improves perceived performance by returning search results as quickly as possible,
 /// while ensuring the index is kept up-to-date in the background.
@@ -158,11 +199,17 @@ pub async fn speculate_search(
     max_count: usize,
     embedding_concurrency: Option<usize>,
     show_scores: bool,
+    use_native_embeddings: bool,
+    model: &str,
+    namespace_override: Option<&str>,
+    multi: bool,
 ) -> Result<String, SearchError> {
     loop {
         let mut search_task = tokio::spawn({
             let query = query.to_string();
             let directory = directory.to_string();
+            let model = model.to_string();
+            let namespace_override = namespace_override.map(|s| s.to_string());
             async move {
                 search(
                     &query,
@@ -170,13 +217,18 @@ pub async fn speculate_search(
                     max_count,
                     embedding_concurrency,
                     show_scores,
+                    use_native_embeddings,
+                    &model,
+                    namespace_override.as_deref(),
                 )
                 .await
             }
         });
         let mut index_task = tokio::spawn({
             let directory = directory.to_string();
-            async move { sync::tpuf_sync(&directory, embedding_concurrency).await }
+            let model = model.to_string();
+            let namespace_override = namespace_override.map(|s| s.to_string());
+            async move { sync::tpuf_sync(&directory, embedding_concurrency, use_native_embeddings, &model, namespace_override.as_deref(), false, multi).await }
         });
 
         tokio::select! {
@@ -272,6 +324,7 @@ mod tests {
             file_ctime: 1000,
             content: Some("fn main() {\n    println!(\"Hello!\");\n}".to_string()),
             distance: None,
+            ..Default::default()
         }];
 
         let result = chunks_to_ripgrep_format(chunks, "/project", false);
